@@ -675,6 +675,29 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     payload,
                 );
             } else {
+                let mut payload = json!({
+                    "provider": "codex",
+                    "itemId": item_id,
+                    "kind": bounded_text(item_type, 160),
+                    "status": provider_status(string(provider_item.get("status")), completed),
+                    "channel": if item_type == "agentMessage" && provider_phase == "final_answer" {
+                        "final"
+                    } else if item_type == "agentMessage" {
+                        "progress"
+                    } else {
+                        "detail"
+                    },
+                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
+                });
+                if !provider_phase.is_empty() {
+                    payload
+                        .as_object_mut()
+                        .expect("item payload is an object")
+                        .insert(
+                            "providerPhase".to_owned(),
+                            Value::String(bounded_text(provider_phase, 160)),
+                        );
+                }
                 push(
                     &mut events,
                     if completed {
@@ -687,25 +710,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     } else {
                         EventPriority::P2
                     },
-                    json!({
-                        "provider": "codex",
-                        "itemId": item_id,
-                        "kind": bounded_text(item_type, 160),
-                        "status": provider_status(string(provider_item.get("status")), completed),
-                        "channel": if item_type == "agentMessage" && provider_phase == "final_answer" {
-                            "final"
-                        } else if item_type == "agentMessage" {
-                            "progress"
-                        } else {
-                            "detail"
-                        },
-                        "providerPhase": if provider_phase.is_empty() {
-                            Value::Null
-                        } else {
-                            Value::String(bounded_text(provider_phase, 160))
-                        },
-                        "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
-                    }),
+                    payload,
                 );
             }
         }
@@ -1211,6 +1216,17 @@ mod tests {
         );
         assert_eq!(commentary[0].payload["channel"], "progress");
         assert_eq!(commentary[0].payload["providerPhase"], "commentary");
+
+        let legacy = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-legacy",
+                "type": "agentMessage",
+                "status": "completed",
+                "text": "Legacy response.",
+            }}),
+        );
+        assert!(legacy[0].payload.get("providerPhase").is_none());
     }
 
     #[test]
