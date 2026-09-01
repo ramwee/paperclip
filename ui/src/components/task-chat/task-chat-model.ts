@@ -241,6 +241,7 @@ export interface TaskChatMarkerItem {
   detail?: string;
   /** Renders the marker as a quiet disclosure row with detail beneath it. */
   collapsible?: boolean;
+  runId?: string;
   createdAtIso?: string;
   runHref?: string;
 }

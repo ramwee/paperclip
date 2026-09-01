@@ -435,6 +435,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     interruptingQueuedRunId,
     onTryAgainNoLiveExecutionPath,
     tryAgainNoLiveExecutionPathPending = false,
+    onRetryFailedRun,
+    retryFailedRunId = null,
     queuedCommentQueue,
     onEditQueuedComment,
     onReorderQueuedComments,
@@ -1290,6 +1292,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               label: "Run failed",
               detail,
               collapsible: true,
+              runId: source.id,
               createdAtIso: finishedAt
                 ? new Date(finishedAt).toISOString()
                 : undefined,
@@ -2198,6 +2201,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tryAgainNoLiveExecutionPathPending={
               tryAgainNoLiveExecutionPathPending
             }
+            onRetryFailedRun={onRetryFailedRun}
+            retryFailedRunId={retryFailedRunId}
             tail={
               tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
                 <>

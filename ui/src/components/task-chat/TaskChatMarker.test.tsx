@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TaskChatMarker } from "./TaskChatMarker";
+import { TaskChatThreadView } from "./TaskChatThreadView";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => (
@@ -95,5 +96,38 @@ describe("TaskChatMarker", () => {
     flushSync(() => retry.click());
     await Promise.resolve();
     expect(onTryAgain).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes Try again to the failed run retry callback", async () => {
+    const onRetryFailedRun = vi.fn();
+    flushSync(() =>
+      root!.render(
+        <ThemeProvider>
+          <TaskChatThreadView
+            scroll={false}
+            items={[
+              {
+                id: "run-1:failure",
+                kind: "marker",
+                variant: "interrupted",
+                label: "Run failed",
+                detail: "The runner stopped before returning an answer.",
+                collapsible: true,
+                runId: "run-1",
+              },
+            ]}
+            onRetryFailedRun={onRetryFailedRun}
+          />
+        </ThemeProvider>,
+      ),
+    );
+
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-run-failed-try-again"]',
+    )!;
+    expect(retry).not.toBeNull();
+    flushSync(() => retry.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledWith("run-1");
   });
 });
