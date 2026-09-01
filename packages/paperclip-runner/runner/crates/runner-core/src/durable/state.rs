@@ -1201,6 +1201,11 @@ fn redact_sensitive_text_values(input: &str) -> String {
             if separator < bytes.len() && is_name_byte(bytes[separator]) {
                 continue;
             }
+            // Serialized diagnostics commonly quote object keys before the
+            // assignment separator: {"access_token":"..."}.
+            if separator < bytes.len() && matches!(bytes[separator], b'\'' | b'"') {
+                separator += 1;
+            }
             while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
                 separator += 1;
             }
@@ -1538,6 +1543,12 @@ mod tests {
                 "proxyAuthorization: Bearer first-secret; ProxyAuthorization: Basic second-secret"
             ),
             "proxyAuthorization: Bearer [REDACTED]; ProxyAuthorization: Basic [REDACTED]"
+        );
+        assert_eq!(
+            redact_text(
+                r#"{"proxyAuthorization":"Bearer first-secret","access_token":"second-secret"}"#
+            ),
+            r#"{"proxyAuthorization":"Bearer [REDACTED]","access_token":"[REDACTED]"}"#
         );
     }
 
