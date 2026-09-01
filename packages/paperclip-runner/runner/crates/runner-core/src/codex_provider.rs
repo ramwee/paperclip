@@ -514,11 +514,16 @@ impl CodexProvider {
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let mut provider = Self {
-            process: SupervisedProcess::spawn(
+            process: SupervisedProcess::spawn_with_additional_environment_keys(
                 &config.command,
                 &config.args,
                 Duration::from_secs(2),
                 CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                // The controller materializes auth.json directly in this
+                // isolated home. HOME points at the same directory for skill
+                // discovery, but Codex resolves its login cache from
+                // CODEX_HOME (or HOME/.codex when it is absent).
+                &["CODEX_HOME"],
             )?,
             config: config.clone(),
             authorized_tools,

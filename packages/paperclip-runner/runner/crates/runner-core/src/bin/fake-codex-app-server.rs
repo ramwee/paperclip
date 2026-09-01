@@ -445,6 +445,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
+    let require_codex_home_auth = args
+        .iter()
+        .any(|value| value == "--require-codex-home-auth");
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
     let replay_completed_tool_call = args
@@ -591,6 +594,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 skill_path.display()
             )
             .into());
+        }
+    }
+    if require_codex_home_auth {
+        let auth_path = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("auth.json"))
+            .ok_or("CODEX_HOME is required for the selected auth fixture")?;
+        if !auth_path.is_file() {
+            return Err(
+                format!("Codex auth was not materialized at {}", auth_path.display()).into(),
+            );
         }
     }
     let mut state = load_state(&state_path);
