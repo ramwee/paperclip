@@ -16,9 +16,17 @@ describe("paperclip_runner operational skill normalization", () => {
   it("applies full-auto native runner defaults at persistence boundaries", () => {
     expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", {})).toEqual({
       provider: "codex",
+      model: "gpt-5.6-sol",
       codexPermissionMode: "never",
       lifecycleMode: "per_turn",
     });
+  });
+
+  it("repairs an existing blank model without replacing an explicit model", () => {
+    expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { model: "" }))
+      .toMatchObject({ model: "gpt-5.6-sol" });
+    expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { model: "gpt-5.5" }))
+      .toMatchObject({ model: "gpt-5.5" });
   });
 
   it("removes the legacy operational skill while preserving optional skills", () => {

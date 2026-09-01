@@ -18,7 +18,10 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
@@ -147,6 +150,17 @@ const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local";
+}
+
+export function resolvePaperclipRunnerTransitionModel(
+  previousAdapterType: string,
+  previousModel: unknown,
+): string {
+  return previousAdapterType === "codex_local"
+    && typeof previousModel === "string"
+    && previousModel.trim().length > 0
+    ? previousModel.trim()
+    : DEFAULT_CODEX_LOCAL_MODEL;
 }
 
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
@@ -1574,6 +1588,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+                    } else if (t === "paperclip_runner") {
+                      nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                     }
                     set!(nextValues);
                   } else {
@@ -1593,6 +1609,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : t === "paperclip_runner"
+                              ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
                         effort: "",
                         modelReasoningEffort: "",

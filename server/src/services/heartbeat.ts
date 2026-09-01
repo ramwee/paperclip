@@ -380,6 +380,7 @@ import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
+  resolvePaperclipRunnerModel,
   resolvePaperclipRunnerPermissionMode,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
@@ -20116,9 +20117,14 @@ export function heartbeatService(
                 parseObject(runtimeConfig).acpxPermissionMode,
               ) as "approve-all" | "approve-reads" | "deny-all",
               model:
-                typeof parseObject(agent.adapterConfig).model === "string"
-                  ? String(parseObject(agent.adapterConfig).model)
-                  : null,
+                nativeRuntimeResolution.profile.backend === "codex_app_server"
+                  ? resolvePaperclipRunnerModel(
+                      "codex",
+                      parseObject(agent.adapterConfig).model,
+                    )
+                  : typeof parseObject(agent.adapterConfig).model === "string"
+                    ? String(parseObject(agent.adapterConfig).model)
+                    : null,
               lifecyclePolicy: effectiveLifecyclePolicy,
               interactionResponses,
               completionContract: {

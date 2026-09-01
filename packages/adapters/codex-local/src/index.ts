@@ -1,4 +1,7 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+import {
+  PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  type AdapterModelProfileDefinition,
+} from "@paperclipai/adapter-utils";
 
 export const type = "codex_local";
 export const label = "Codex";
@@ -8,7 +11,7 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 // Use the concrete `gpt-5.6-sol` slug (Codex's own default for the 5.6 family) rather than the
 // bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
 // Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
+export const DEFAULT_CODEX_LOCAL_MODEL = PAPERCLIP_RUNNER_DEFAULT_MODELS.codex;
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
   "gpt-5.6-sol",

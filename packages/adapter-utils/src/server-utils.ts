@@ -11,7 +11,10 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
-import { PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES } from "./paperclip-runner-permissions.js";
+import {
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  resolvePaperclipRunnerModel,
+} from "./paperclip-runner-permissions.js";
 import type {
   AdapterRuntimeToolAccess,
   AdapterSkillEntry,
@@ -3093,6 +3096,7 @@ export function normalizePaperclipRunnerAdapterConfig(
     codexPermissionMode: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
     lifecycleMode: "per_turn",
     ...config,
+    model: resolvePaperclipRunnerModel("codex", config.model),
   };
   return normalizePaperclipOperationalSkillPreference(adapterType, next);
 }

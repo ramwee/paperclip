@@ -739,6 +739,14 @@ In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to th
 
 When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
 
+## Paperclip Runner Adapter Conversion
+
+While the native runner supports only Codex, changing an existing agent to
+`paperclip_runner` is supported only from `codex_local`. The conversion keeps a
+non-empty Codex model and otherwise stores the shared `gpt-5.6-sol` default.
+The native execution boundary applies the same default to older runner rows
+whose model is missing or blank.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The

@@ -135,8 +135,16 @@ describe("buildPaperclipRunnerConfig", () => {
       },
     }))).toMatchObject({
       provider: "codex",
+      model: "gpt-5.4",
       codexPermissionMode: "never",
       lifecycleMode: "per_turn",
+    });
+  });
+
+  it("uses the Codex default when no model was selected", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({ model: "" }))).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.6-sol",
     });
   });
 
