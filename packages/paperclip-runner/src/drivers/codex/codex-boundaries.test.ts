@@ -20,19 +20,21 @@ import {
 } from "./codex-boundaries.js";
 
 describe("Codex value and workspace boundaries", () => {
-  it("accepts only an assigned non-root workspace that does not contain host state", () => {
+  it("accepts assigned workspaces below HOME while rejecting host-state and containment escapes", () => {
     const fixture = mkdtempSync(join(tmpdir(), "paperclip-codex-boundaries-"));
     try {
-      const workspaceRoot = join(fixture, "workspaces");
-      const workspace = join(workspaceRoot, "run-1");
-      const outside = join(fixture, "outside");
       const hostRoot = join(fixture, "host");
       const hostHome = join(hostRoot, "home");
+      const workspaceRoot = join(hostHome, ".paperclip", "workspaces");
+      const workspace = join(workspaceRoot, "run-1");
+      const ordinaryHomeWorkspace = join(hostHome, "projects", "app");
+      const outside = join(fixture, "outside");
       const protectedHomeDirectory = join(hostHome, ".ssh");
       const codexHome = join(fixture, "codex-home");
       const codexWorkspace = join(codexHome, "run");
       for (const directory of [
         workspace,
+        ordinaryHomeWorkspace,
         outside,
         protectedHomeDirectory,
         codexWorkspace,
@@ -47,6 +49,12 @@ describe("Codex value and workspace boundaries", () => {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
         }),
       ).toBe(realpathSync.native(workspace));
+      expect(
+        validateCodexWorkingDirectory(ordinaryHomeWorkspace, {
+          HOME: hostHome,
+          CODEX_HOME: codexHome,
+        }),
+      ).toBe(realpathSync.native(ordinaryHomeWorkspace));
       expect(() =>
         validateCodexWorkingDirectory(join(workspaceRoot, "future-run"), {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
@@ -60,8 +68,14 @@ describe("Codex value and workspace boundaries", () => {
         validateCodexWorkingDirectory(hostRoot, { HOME: hostHome }),
       ).toThrow("cannot contain the host HOME");
       expect(() =>
-        validateCodexWorkingDirectory(protectedHomeDirectory, { HOME: hostHome }),
-      ).toThrow("cannot overlap the host HOME");
+        validateCodexWorkingDirectory(hostHome, { HOME: hostHome }),
+      ).toThrow("cannot contain the host HOME");
+      expect(() =>
+        validateCodexWorkingDirectory(protectedHomeDirectory, {
+          HOME: hostHome,
+          PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
+        }),
+      ).toThrow("outside the assigned workspace");
       expect(() =>
         validateCodexWorkingDirectory(outside, {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,

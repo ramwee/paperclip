@@ -1163,6 +1163,22 @@ describe("native provider bootstrap environment", () => {
       OPENAI_API_KEY: "configured-provider-key",
     });
   });
+
+  it("pins the server-assigned workspace over configured environment input", () => {
+    expect(
+      buildNativeProviderEnvironment(
+        {
+          PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+        },
+        { HOME: "/Users/runner" },
+        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
+      ),
+    ).toEqual({
+      HOME: "/Users/runner",
+      PAPERCLIP_WORKSPACE_CWD:
+        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
+    });
+  });
 });
 
 const execution = {
@@ -2659,6 +2675,30 @@ describe("native process ownership", () => {
 });
 
 describe("runnerd provider runtime wiring", () => {
+  it("uses the native execution workspace as the local provider containment root", async () => {
+    state.createBackend.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-local-workspace",
+      runnerEnvironment: {
+        HOME: "/home/runner",
+        PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+      },
+    });
+
+    const backendOptions = state.createBackend.mock.calls[0]![1];
+    state.createTransport.mockClear();
+    backendOptions.codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          PAPERCLIP_WORKSPACE_CWD: execution.workspace.cwd,
+        }),
+      }),
+    );
+  });
+
   it("reuses legacy unscoped state only for its exact durable run identity", async () => {
     const stateBase = await mkdtemp(join(tmpdir(), "paperclip-legacy-runner-state-"));
     const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -2888,6 +2928,16 @@ describe("runnerd provider runtime wiring", () => {
       expect.objectContaining({
         input: expect.objectContaining({
           workspace: expect.objectContaining({ cwd: remoteCwd }),
+        }),
+      }),
+    );
+    const backendOptions = state.createBackend.mock.calls[0]![1];
+    state.createTransport.mockClear();
+    backendOptions.codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          PAPERCLIP_WORKSPACE_CWD: remoteCwd,
         }),
       }),
     );

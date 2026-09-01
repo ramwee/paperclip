@@ -747,6 +747,13 @@ non-empty Codex model and otherwise stores the shared `gpt-5.6-sol` default.
 The native execution boundary applies the same default to older runner rows
 whose model is missing or blank.
 
+For native Codex runs, Paperclip passes the resolved execution workspace as
+`PAPERCLIP_WORKSPACE_CWD` and uses it as the provider containment boundary. A
+workspace below the host `HOME` is valid, including the default projectless
+agent workspace. The host `HOME` itself, a directory that contains it, a
+filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
+assigned workspace is rejected before provider startup.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
