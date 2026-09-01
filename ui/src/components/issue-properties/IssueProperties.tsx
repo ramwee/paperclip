@@ -68,7 +68,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
-import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
+import { User, ArrowLeft, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -96,6 +96,16 @@ import {
   thinkingEffortValueFor,
   toDateTimeLocalValue,
 } from "./helpers";
+import {
+  buildWorkspaceSelectionUpdate,
+  currentWorkspaceSelection,
+  type IssueWorkspaceSelection,
+} from "../../lib/issue-workspace-selection";
+import {
+  buildReusableExecutionWorkspaceOptionGroups,
+  dedupeReusableExecutionWorkspaces,
+  reusableWorkspaceOptionMatches,
+} from "../../lib/reusable-execution-workspaces";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
 import { issueReviewPolicyBadge } from "../../lib/review-policy";
@@ -301,6 +311,9 @@ export function IssueProperties({
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
   const [monitorOpen, setMonitorOpen] = useState(false);
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [workspacePickerStep, setWorkspacePickerStep] = useState<"mode" | "reuse">("mode");
+  const [workspaceSearch, setWorkspaceSearch] = useState("");
   const [monitorDetailsOpen, setMonitorDetailsOpen] = useState(false);
   const [scheduledRetryOpen, setScheduledRetryOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
@@ -453,6 +466,25 @@ export function IssueProperties({
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
   const issueProject = issue.project ?? currentProject;
+  const workspacePickerEligible = experimentalSettings?.enableIsolatedWorkspaces === true
+    && Boolean(issueProject?.executionWorkspacePolicy?.enabled);
+  const {
+    data: reusableExecutionWorkspaces,
+    isLoading: reusableExecutionWorkspacesLoading,
+    isError: reusableExecutionWorkspacesError,
+  } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.list(companyId!, {
+      projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+      reuseEligible: true,
+    }),
+    queryFn: () => executionWorkspacesApi.list(companyId!, {
+      projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
+      reuseEligible: true,
+    }),
+    enabled: Boolean(companyId) && Boolean(issue.projectId) && workspacePickerOpen,
+  });
   const issueUsesMainWorkspace = useMemo(
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
@@ -2101,6 +2133,148 @@ export function IssueProperties({
     </button>
   );
 
+  const effectiveWorkspaceSelection = currentWorkspaceSelection(issue, issueProject);
+  const workspacePickerSelection: "default" | IssueWorkspaceSelection =
+    effectiveWorkspaceSelection === "reuse_existing"
+      ? "reuse_existing"
+      : issue.executionWorkspacePreference === "isolated_workspace"
+        || issue.executionWorkspaceSettings?.mode === "isolated_workspace"
+        ? "isolated_workspace"
+        : "default";
+  const boundWorkspace = issue.currentExecutionWorkspace ?? null;
+  const workspaceTriggerLabel = issue.executionWorkspaceId
+    ? boundWorkspace?.name ?? issue.executionWorkspaceId.slice(0, 8)
+    : workspacePickerSelection === "reuse_existing"
+      ? "Reuse existing workspace"
+    : workspacePickerSelection === "isolated_workspace"
+      ? "New isolated workspace"
+      : "Default";
+  const closeWorkspacePicker = () => {
+    setWorkspacePickerOpen(false);
+    setWorkspacePickerStep("mode");
+    setWorkspaceSearch("");
+  };
+  const selectWorkspaceMode = (selection: "default" | "isolated_workspace" | "reuse_existing") => {
+    if (selection === "reuse_existing") {
+      setWorkspacePickerStep("reuse");
+      return;
+    }
+    if (selection === "default") {
+      onUpdate({
+        executionWorkspacePreference: null,
+        executionWorkspaceId: null,
+        executionWorkspaceSettings: null,
+      });
+    } else {
+      const update = buildWorkspaceSelectionUpdate(selection, null, null);
+      if (update) onUpdate(update);
+    }
+    closeWorkspacePicker();
+  };
+  const reusableWorkspaceGroups = buildReusableExecutionWorkspaceOptionGroups(
+    dedupeReusableExecutionWorkspaces(reusableExecutionWorkspaces ?? []),
+  ).map((group) => ({
+    ...group,
+    options: group.options.filter((option) => reusableWorkspaceOptionMatches(option, workspaceSearch)),
+  })).filter((group) => group.options.length > 0);
+  const workspaceModeOptions: Array<{
+    value: "default" | "isolated_workspace" | "reuse_existing";
+    label: string;
+    description: string;
+  }> = [
+    { value: "default", label: "Default", description: "Use the project workspace policy" },
+    { value: "isolated_workspace", label: "New isolated workspace", description: "Create a fresh workspace on the next run" },
+    { value: "reuse_existing", label: "Reuse existing workspace…", description: "Pick a workspace to reuse" },
+  ];
+  const workspacePickerContent = (
+    <div className="flex flex-col">
+      {workspacePickerStep === "mode" ? (
+        <div className="space-y-0.5">
+          {workspaceModeOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={cn(
+                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50",
+                workspacePickerSelection === option.value && "bg-accent",
+              )}
+              onClick={() => selectWorkspaceMode(option.value)}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs text-foreground">{option.label}</span>
+                <span className="block truncate text-xs text-muted-foreground">{option.description}</span>
+              </span>
+              {workspacePickerSelection === option.value ? (
+                <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="flex items-center gap-1 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            onClick={() => {
+              setWorkspacePickerStep("mode");
+              setWorkspaceSearch("");
+            }}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            Workspace mode
+          </button>
+          <input
+            className="w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+            placeholder="Search workspaces…"
+            aria-label="Search workspaces"
+            value={workspaceSearch}
+            onChange={(event) => setWorkspaceSearch(event.target.value)}
+            autoFocus={!inline}
+          />
+          <div className="max-h-52 overflow-y-auto overscroll-contain py-1">
+            {reusableExecutionWorkspacesLoading ? (
+              <div className="flex items-center gap-2 px-2 py-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                Loading workspaces…
+              </div>
+            ) : reusableExecutionWorkspacesError ? (
+              <div className="px-2 py-2 text-xs text-destructive">Could not load workspaces.</div>
+            ) : reusableWorkspaceGroups.length === 0 ? (
+              <div className="px-2 py-2 text-xs text-muted-foreground">No matching workspaces.</div>
+            ) : reusableWorkspaceGroups.map((group) => (
+              <div key={group.id}>
+                <div className="px-2 pb-0.5 pt-1.5 text-xs font-semibold text-muted-foreground">{group.label}</div>
+                {group.options.map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50"
+                    onClick={() => {
+                      const update = buildWorkspaceSelectionUpdate("reuse_existing", option.workspaceId, option.workspace.mode);
+                      if (update) onUpdate(update);
+                      closeWorkspacePicker();
+                    }}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs text-foreground">{option.label}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{option.description}</span>
+                    </span>
+                    {issue.executionWorkspaceId === option.workspaceId ? (
+                      <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      <div className="border-t border-border px-2 py-1.5 text-xs text-muted-foreground">
+        Applies on the next run.
+      </div>
+    </div>
+  );
+
   const propertiesBody = (
     <div>
       <PropertySection title="Triage" first>
@@ -2447,8 +2621,34 @@ export function IssueProperties({
         ) : null}
       </PropertySection>
 
-      {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
+      {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <PropertySection title="Workspace">
+          {workspacePickerEligible ? (
+            <PropertyPicker
+              inline={inline}
+              label="Execution"
+              open={workspacePickerOpen}
+              onOpenChange={(open) => {
+                setWorkspacePickerOpen(open);
+                if (!open) {
+                  setWorkspacePickerStep("mode");
+                  setWorkspaceSearch("");
+                }
+              }}
+              triggerContent={(
+                <span
+                  className="min-w-0 truncate text-sm"
+                  title={boundWorkspace?.branchName ?? undefined}
+                >
+                  {workspaceTriggerLabel}
+                </span>
+              )}
+              triggerClassName="min-w-0 max-w-full"
+              popoverClassName={cn("max-w-full", inline ? "w-full" : "w-72")}
+            >
+              {workspacePickerContent}
+            </PropertyPicker>
+          ) : null}
           {showWorkspaceDetailLink && issue.executionWorkspaceId && (
             <PropertyRow label="Workspace">
               <Link

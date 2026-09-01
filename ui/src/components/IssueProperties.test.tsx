@@ -28,6 +28,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+  list: vi.fn(),
   controlRuntimeCommands: vi.fn(),
 }));
 
@@ -464,6 +465,7 @@ describe("IssueProperties", () => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
@@ -1500,6 +1502,160 @@ describe("IssueProperties", () => {
       expect(findRowTrigger(container, "Project")?.textContent).toContain("Archived Project");
     });
 
+    act(() => root.unmount());
+  });
+
+  it("hides the execution workspace picker when the project policy is disabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject()]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(findRowTrigger(container, "Execution")).toBeUndefined();
+    act(() => root.unmount());
+  });
+
+  it("shows Default for a policy-enabled project without a workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          defaultProjectWorkspaceId: "workspace-main",
+          environmentId: null,
+        },
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1", projectWorkspaceId: "workspace-main" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Execution")?.textContent).toContain("Default");
+    });
+    expect(container.textContent).toContain("Workspace");
+    act(() => root.unmount());
+  });
+
+  it("saves the exact isolated-workspace override from the picker", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({ executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" } }),
+    ]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1", projectWorkspaceId: "workspace-main" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Execution")).not.toBeUndefined();
+    });
+
+    await act(async () => {
+      findRowTrigger(container, "Execution")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const isolatedOption = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New isolated workspace")
+        && button.textContent?.includes("Create a fresh workspace on the next run"),
+    );
+    await act(async () => {
+      isolatedOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "isolated_workspace",
+      executionWorkspaceId: null,
+      executionWorkspaceSettings: { mode: "isolated_workspace", environmentId: null },
+    });
+    act(() => root.unmount());
+  });
+
+  it("searches reusable workspaces and saves the chosen workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({ executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" } }),
+    ]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([
+      createExecutionWorkspace({
+        id: "workspace-feature",
+        name: "Feature workspace",
+        branchName: "feature/picker",
+        lastUsedAt: new Date(),
+      }),
+      createExecutionWorkspace({
+        id: "workspace-release",
+        name: "Release workspace",
+        cwd: "/tmp/paperclip/release",
+        branchName: "release/stable",
+        lastUsedAt: new Date("2026-01-01T00:00:00.000Z"),
+      }),
+    ]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1", projectWorkspaceId: "workspace-main" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Execution")).not.toBeUndefined();
+    });
+
+    await act(async () => {
+      findRowTrigger(container, "Execution")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const reuseOption = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Reuse existing workspace")
+        && button.textContent?.includes("Pick a workspace to reuse"),
+    );
+    await act(async () => {
+      reuseOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockExecutionWorkspacesApi.list).toHaveBeenCalledWith("company-1", {
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-main",
+      reuseEligible: true,
+    });
+    expect(container.textContent).toContain("Recent");
+    expect(container.textContent).toContain("All workspaces");
+    expect(container.textContent).toContain("Feature workspace");
+    expect(container.textContent).toContain("Release workspace");
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search workspaces"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "feature");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Feature workspace");
+    expect(container.textContent).not.toContain("Release workspace");
+
+    const featureOption = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Feature workspace"),
+    );
+    await act(async () => {
+      featureOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceId: "workspace-feature",
+      executionWorkspaceSettings: { mode: "isolated_workspace", environmentId: null },
+    });
     act(() => root.unmount());
   });
 

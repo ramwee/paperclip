@@ -9,9 +9,10 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
-  defaultExecutionWorkspaceModeForProject,
-  issueExecutionWorkspaceModeForExistingWorkspace,
-} from "../lib/project-workspace-defaults";
+  buildWorkspaceSelectionUpdate,
+  currentWorkspaceSelection,
+  type IssueWorkspaceSelection,
+} from "../lib/issue-workspace-selection";
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -28,22 +29,6 @@ const EXECUTION_WORKSPACE_OPTIONS = [
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
 ] as const;
-
-function shouldPresentExistingWorkspaceSelection(
-  issue: Pick<
-    Issue,
-    "executionWorkspaceId" | "executionWorkspacePreference" | "executionWorkspaceSettings" | "currentExecutionWorkspace"
-  >,
-) {
-  const persistedMode =
-    issue.currentExecutionWorkspace?.mode
-    ?? issue.executionWorkspaceSettings?.mode
-    ?? issue.executionWorkspacePreference;
-  return Boolean(
-    issue.executionWorkspaceId &&
-    (persistedMode === "isolated_workspace" || persistedMode === "operator_branch"),
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /*  Sub-components                                                             */
@@ -259,13 +244,7 @@ export function IssueWorkspaceCard({
     ?? workspace
     ?? null;
 
-  const currentSelection = shouldPresentExistingWorkspaceSelection(issue)
-    ? "reuse_existing"
-    : (
-        issue.executionWorkspacePreference
-        ?? issue.executionWorkspaceSettings?.mode
-        ?? defaultExecutionWorkspaceModeForProject(project)
-      );
+  const currentSelection = currentWorkspaceSelection(issue, project);
 
   const [draftSelection, setDraftSelection] = useState(currentSelection);
   const [draftExecutionWorkspaceId, setDraftExecutionWorkspaceId] = useState(issue.executionWorkspaceId ?? "");
@@ -313,17 +292,11 @@ export function IssueWorkspaceCard({
       ? configuredReusableWorkspace?.branchName ?? null
       : null;
 
-  const buildWorkspaceDraftUpdate = useCallback(() => ({
-    executionWorkspacePreference: draftSelection,
-    executionWorkspaceId: draftSelection === "reuse_existing" ? draftExecutionWorkspaceId || null : null,
-    executionWorkspaceSettings: {
-      mode:
-        draftSelection === "reuse_existing"
-          ? issueExecutionWorkspaceModeForExistingWorkspace(configuredReusableWorkspace?.mode)
-          : draftSelection,
-      environmentId: null,
-    },
-  }), [
+  const buildWorkspaceDraftUpdate = useCallback(() => buildWorkspaceSelectionUpdate(
+    draftSelection,
+    draftExecutionWorkspaceId,
+    configuredReusableWorkspace?.mode,
+  ), [
     configuredReusableWorkspace?.mode,
     draftExecutionWorkspaceId,
     draftSelection,
@@ -331,7 +304,9 @@ export function IssueWorkspaceCard({
 
   useEffect(() => {
     if (!onDraftChange) return;
-    onDraftChange(buildWorkspaceDraftUpdate(), {
+    const update = buildWorkspaceDraftUpdate();
+    if (!update) return;
+    onDraftChange(update, {
       canSave: canSaveWorkspaceConfig,
       workspaceBranchName: draftWorkspaceBranchName,
     });
@@ -339,7 +314,9 @@ export function IssueWorkspaceCard({
 
   const handleSave = useCallback(() => {
     if (!canSaveWorkspaceConfig) return;
-    onUpdate(buildWorkspaceDraftUpdate());
+    const update = buildWorkspaceDraftUpdate();
+    if (!update) return;
+    onUpdate(update);
     setEditing(false);
   }, [
     buildWorkspaceDraftUpdate,
@@ -476,7 +453,7 @@ export function IssueWorkspaceCard({
             className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
             value={draftSelection}
             onChange={(e) => {
-              const nextMode = e.target.value;
+              const nextMode = e.target.value as IssueWorkspaceSelection;
               setDraftSelection(nextMode);
               if (nextMode !== "reuse_existing") {
                 setDraftExecutionWorkspaceId("");
