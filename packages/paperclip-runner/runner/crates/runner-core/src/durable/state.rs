@@ -1158,6 +1158,10 @@ fn redact_sensitive_text_values(input: &str) -> String {
         }
         end
     };
+    let is_redaction_marker = |start: usize| {
+        normalized[start..].starts_with("[redacted]")
+            || normalized[start..].starts_with("***redacted***")
+    };
 
     // Bearer credentials can appear outside a named header in provider errors.
     for (start, _) in normalized.match_indices("bearer") {
@@ -1169,6 +1173,9 @@ fn redact_sensitive_text_values(input: &str) -> String {
         }
         while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
             value_start += 1;
+        }
+        if is_redaction_marker(value_start) {
+            continue;
         }
         let end = value_end(value_start);
         if end > value_start {
@@ -1225,6 +1232,9 @@ fn redact_sensitive_text_values(input: &str) -> String {
                     }
                     break;
                 }
+            }
+            if is_redaction_marker(value_start) {
+                continue;
             }
             let end = if let Some(quote) = quote {
                 bytes[value_start..]
@@ -1505,6 +1515,23 @@ mod tests {
         assert_eq!(
             redact_text("login failed password=\"two word secret\" status=403"),
             "login failed password=\"[REDACTED]\" status=403"
+        );
+    }
+
+    #[test]
+    fn diagnostic_redaction_is_idempotent() {
+        for input in [
+            "Missing bearer secret-value",
+            "Authorization: Bearer secret-value; retry",
+            "token=secret-value&reason=expired",
+            "password=\"two word secret\" status=403",
+        ] {
+            let once = redact_text(input);
+            assert_eq!(redact_text(&once), once);
+        }
+        assert_eq!(
+            redact_text("Missing bearer [REDACTED]"),
+            "Missing bearer [REDACTED]"
         );
     }
 

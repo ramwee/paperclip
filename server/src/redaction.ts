@@ -37,6 +37,10 @@ const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-
 // public discriminators, not credentials. Exempt only the closed Paperclip
 // schema namespace while retaining the existing fail-closed JWT value guard.
 const PAPERCLIP_SCHEMA_ID_RE = /^paperclip\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.v\d+$/;
+const NATIVE_RUN_SPAN_SCHEMA = "paperclip.run-performance-span.v1";
+const NATIVE_RUN_SPAN_FIELDS = ["span", "parentSpan"] as const;
+const NATIVE_RUN_SPAN_NAME_RE =
+  /^(?:agent|environment|harness|native|provider|runner|sandbox|session|stage|task|workspace)\.[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/;
 const CLI_SECRET_FLAG_RE = new RegExp(String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`, "i");
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` + "`" + String.raw`\r\n]+((?:"|'))`,
@@ -168,7 +172,21 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
 export function redactEventPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
-  return sanitizeRecord(payload);
+  const sanitized = sanitizeRecord(payload);
+  if (payload.schema !== NATIVE_RUN_SPAN_SCHEMA) return sanitized;
+
+  // Native run span identities are controlled diagnostics emitted by
+  // createNativeRunTrace, not provider data. Their dotted names overlap the
+  // broad JWT-value heuristic, so restore only these two fields on the exact
+  // run-performance schema. Hostnames and JWT-shaped values on every other
+  // field and schema still fail closed through sanitizeRecord above.
+  for (const field of NATIVE_RUN_SPAN_FIELDS) {
+    const value = payload[field];
+    if (typeof value === "string" && value.length <= 160 && NATIVE_RUN_SPAN_NAME_RE.test(value)) {
+      sanitized[field] = value;
+    }
+  }
+  return sanitized;
 }
 
 export function redactSensitiveText(input: string): string {
