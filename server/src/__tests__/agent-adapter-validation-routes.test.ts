@@ -590,12 +590,64 @@ describe("agent routes adapter validation", () => {
         .send({
           name: "Native Codex",
           adapterType: "paperclip_runner",
-          adapterConfig: { provider: "codex" },
+          adapterConfig: {
+            provider: "codex",
+            paperclipSkillSync: {
+              desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+            },
+          },
         }),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockAgentService.create).toHaveBeenCalledOnce();
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          provider: "codex",
+          codexPermissionMode: "never",
+          lifecycleMode: "per_turn",
+          paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("normalizes legacy skills and permissions when switching to paperclip_runner", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "codex_local",
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+        },
+      },
+    });
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType: "paperclip_runner", replaceAdapterConfig: true, adapterConfig: {} }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterType: "paperclip_runner",
+        adapterConfig: expect.objectContaining({
+          provider: "codex",
+          codexPermissionMode: "never",
+          lifecycleMode: "per_turn",
+          paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
+        }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it("rejects non-Codex providers on fresh paperclip_runner agents and hires", async () => {

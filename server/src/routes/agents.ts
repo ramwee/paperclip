@@ -36,6 +36,7 @@ import {
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
+  normalizePaperclipRunnerAdapterConfig,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   parseObject,
   resolvePaperclipInstanceRootForAdapter,
@@ -77,10 +78,10 @@ import { resolveEnvironmentExecutionTarget } from "../services/environment-execu
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import type {
-  AdapterEnvironmentCheck,
-  AdapterEnvironmentTestResult,
-  AdapterModelProfileDefinition,
+import {
+  type AdapterEnvironmentCheck,
+  type AdapterEnvironmentTestResult,
+  type AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
@@ -1966,7 +1967,10 @@ export function agentRoutes(
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
     );
-    return normalizedAdapterConfig;
+    return normalizePaperclipRunnerAdapterConfig(
+      input.adapterType ?? "",
+      normalizedAdapterConfig,
+    );
   }
 
   async function normalizeRuntimeConfigAdapterConfigsForPersistence(
@@ -2064,6 +2068,9 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "paperclip_runner") {
+      return normalizePaperclipRunnerAdapterConfig(adapterType, next);
+    }
     if (adapterType === "codex_local") {
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
@@ -2471,16 +2478,14 @@ export function agentRoutes(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
 
-    const desiredSkillEntries = mergeDesiredSkillEntries(currentSkillEntries, requestedSkillEntries, mode);
-    if (
-      adapterType === "paperclip_runner"
-      && mode !== "remove"
-      && requestedSkillEntries.some((entry) => entry.key === PAPERCLIP_OPERATIONAL_SKILL_KEY)
-    ) {
-      throw unprocessable(
-        `paperclip_runner does not support the legacy Paperclip operational skill (${PAPERCLIP_OPERATIONAL_SKILL_KEY}); remove it from this agent`,
-      );
-    }
+    const desiredSkillEntries = mergeDesiredSkillEntries(
+      currentSkillEntries,
+      requestedSkillEntries,
+      mode,
+    ).filter(
+      (entry) => adapterType !== "paperclip_runner"
+        || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     const resolvedKeys = new Set([
       ...resolvedCurrentSkillEntries.map((entry) => entry.key),

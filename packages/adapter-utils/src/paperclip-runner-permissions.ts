@@ -38,7 +38,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   codex: {
     configurable: true,
     configKey: "codexPermissionMode",
-    defaultMode: "untrusted",
+    defaultMode: "never",
     description: "Controls when Codex asks before an operation inside the assigned Paperclip environment.",
     options: [
       { value: "never", label: "Full auto (never ask)", description: "Run without Codex approval pauses." },

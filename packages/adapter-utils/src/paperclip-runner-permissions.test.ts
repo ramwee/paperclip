@@ -6,6 +6,12 @@ import {
 } from "./paperclip-runner-permissions.js";
 
 describe("Paperclip Runner permission defaults", () => {
+  it("defaults Codex to full auto", () => {
+    expect(resolvePaperclipRunnerPermissionMode("codex", undefined)).toBe(
+      "never",
+    );
+  });
+
   it("uses interactive defaults for dormant non-Codex providers", () => {
     expect(resolvePaperclipRunnerPermissionMode("opencode", undefined)).toBe(
       "ask",
