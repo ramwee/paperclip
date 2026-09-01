@@ -1286,30 +1286,38 @@ export async function executeNativeSession(
     const replacementAllowed =
       providerRecoveryCheckpoint.providerRecoveryPolicy ===
       "allow_replacement_after_resume_failure";
-    const recovery = options.backend.recoverSession
-      ? await runAbortableOperationWithin({
-          timeoutMs: recoveryTimeoutMs,
-          timeoutMessage: `native session provider recovery timed out after ${recoveryTimeoutMs}ms`,
-          operation: (signal) =>
-            options.backend.recoverSession!(providerRecoveryCheckpoint, {
-              signal,
-            }),
-          onLateResolution: async (lateRecovery) => {
-            if (lateRecovery.session) {
-              await disposeUnadmittedSession(
-                lateRecovery.session,
-                "native session provider recovery timed out",
-                cleanupDomain,
-              );
-            }
-          },
-        })
-      : {
+    const failedProviderSession =
+      providerRecoveryCheckpoint.terminal?.runTerminalState === "failed" &&
+      providerRecoveryCheckpoint.semanticResult === null;
+    const recovery = failedProviderSession
+      ? {
           recovered: false as const,
-          reason: "driver does not support recovery",
-        };
+          reason: "provider session ended with a failed terminal",
+        }
+      : options.backend.recoverSession
+        ? await runAbortableOperationWithin({
+            timeoutMs: recoveryTimeoutMs,
+            timeoutMessage: `native session provider recovery timed out after ${recoveryTimeoutMs}ms`,
+            operation: (signal) =>
+              options.backend.recoverSession!(providerRecoveryCheckpoint, {
+                signal,
+              }),
+            onLateResolution: async (lateRecovery) => {
+              if (lateRecovery.session) {
+                await disposeUnadmittedSession(
+                  lateRecovery.session,
+                  "native session provider recovery timed out",
+                  cleanupDomain,
+                );
+              }
+            },
+          })
+        : {
+            recovered: false as const,
+            reason: "driver does not support recovery",
+          };
     if (!recovery.recovered || !recovery.session) {
-      if (!replacementAllowed) {
+      if (!replacementAllowed && !failedProviderSession) {
         throw new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );

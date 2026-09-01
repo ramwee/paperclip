@@ -687,6 +687,9 @@ export function rehydrateRunnerdTurnNotification(
       ...(rawTurn.status === undefined && rawParams.status !== undefined
         ? { status: rawParams.status }
         : {}),
+      ...(rawTurn.error === undefined && rawParams.error !== undefined
+        ? { error: rawParams.error }
+        : {}),
     },
   };
 }
@@ -1191,7 +1194,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...(this.#providerIdentity === null
             ? {}
             : { providerIdentity: structuredClone(this.#providerIdentity) }),
-          cwd: this.options.runnerFilesystemRoot ?? tmpdir(),
+          cwd:
+            typeof snapshot.cwd === "string" && snapshot.cwd.length > 0
+              ? snapshot.cwd
+              : this.options.environment?.PAPERCLIP_WORKSPACE_CWD ??
+                this.options.runnerFilesystemRoot ??
+                tmpdir(),
           turns: recoveredTurns,
         },
       };

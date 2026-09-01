@@ -4233,6 +4233,130 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
+  it("replaces a provider session that already ended with a failed terminal", async () => {
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-failed",
+      identity,
+      providerSessionId: "provider-failed",
+      cursor: null,
+      activeTurnId: null,
+      semanticResult: null,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "failed",
+        runTerminalState: "failed",
+        reportedWorkDisposition: "yielded",
+      },
+      terminalTurns: [{ turnId: "turn-failed", fingerprint: "failed" }],
+      pendingRuntimeRequests: [],
+      lineage: [],
+    };
+    const replacementSnapshot: PersistedNativeSession = {
+      ...checkpoint,
+      sessionId: "driver-replacement",
+      providerSessionId: "provider-replacement",
+      terminal: null,
+      terminalTurns: [],
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "turn-replacement" }));
+    const replacementSession: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return {
+          resume: true,
+          typedEvents: true,
+          steering: false,
+          interruption: true,
+          structuredResult: true,
+        };
+      },
+      async *events() {
+        yield runnerEvent(1, "turn.completed");
+      },
+      startTurn,
+      async result() {
+        return { result, terminal, turnId: "turn-replacement" };
+      },
+      async snapshot() {
+        return structuredClone(replacementSnapshot);
+      },
+      async close() {},
+    };
+    const recoverSession = vi.fn(async () => ({
+      recovered: true as const,
+      session: replacementSession,
+    }));
+    const openReplacementSession = vi.fn(async () => replacementSession);
+    const onContinuityBreak = vi.fn(async () => undefined);
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "replacement-backend",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+        };
+      },
+      async openSession() {
+        throw new Error("replacement seam must be used");
+      },
+      recoverSession,
+      openReplacementSession,
+    };
+    const events: PrpEvent[] = [];
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async loadSessionCheckpoint() {
+        return structuredClone(checkpoint);
+      },
+      async checkpointSession() {},
+      async appendEvent(event) {
+        events.push(structuredClone(event));
+        return {
+          cursor: events.length,
+          highestContiguousSourceSeq: highestContiguous(events),
+          disposition: "committed",
+        };
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-replacement",
+        controlPlaneInstanceId: "control-replacement",
+        onContinuityBreak,
+      }),
+    ).resolves.toMatchObject({ providerSessionId: "provider-replacement" });
+
+    expect(recoverSession).not.toHaveBeenCalled();
+    expect(openReplacementSession).toHaveBeenCalledOnce();
+    const replacementEnvelope = JSON.parse(
+      startTurn.mock.calls[0]![0].message.text,
+    ) as { task: { prompt: string } };
+    expect(replacementEnvelope.task.prompt).toBe(input.task.prompt);
+    expect(onContinuityBreak).toHaveBeenCalledWith({
+      reason: "provider session ended with a failed terminal",
+      previousDriverSessionId: "driver-failed",
+      previousProviderSessionId: "provider-failed",
+      replacementDriverSessionId: "driver-replacement",
+      replacementProviderSessionId: "provider-replacement",
+    });
+  });
+
   it("retries disposition recovery when the driver releases an absent bound provider turn", async () => {
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",

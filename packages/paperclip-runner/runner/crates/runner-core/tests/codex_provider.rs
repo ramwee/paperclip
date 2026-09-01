@@ -1732,6 +1732,7 @@ fn durable_ambiguous_start_recovers_a_distinct_active_replacement_after_process_
         .expect("reconcile active replacement turn");
     assert_eq!(snapshot.result["status"], "turn_active");
     assert_eq!(snapshot.result["activeProviderTurnId"], "provider-turn-2");
+    assert_eq!(snapshot.result["cwd"], config.cwd);
     let persisted_recovered: Value = serde_json::from_slice(
         &fs::read(directory.join("codex-provider-state.json"))
             .expect("read recovered provider state"),

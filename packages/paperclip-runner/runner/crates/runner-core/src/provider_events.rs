@@ -371,6 +371,32 @@ fn bounded_text(value: &str, max_chars: usize) -> String {
     redact_text(value).chars().take(max_chars).collect()
 }
 
+fn codex_terminal_error(params: &Value, event_type: &str) -> Value {
+    if event_type != "turn.failed" {
+        return Value::Null;
+    }
+    let error = [
+        "/turn/error",
+        "/turn/failure",
+        "/turn/reason",
+        "/turn/message",
+        "/error",
+        "/failure",
+        "/reason",
+        "/message",
+    ]
+    .into_iter()
+    .find_map(|pointer| params.pointer(pointer).filter(|value| !value.is_null()));
+    match error {
+        Some(Value::String(message)) => Value::String(bounded_text(message, MAX_TEXT_CHARS)),
+        Some(value) => sanitize_value(value),
+        None => json!({
+            "code": "provider_terminal_error_missing",
+            "message": "Codex reported a failed turn without error details",
+        }),
+    }
+}
+
 fn string(value: Option<&Value>) -> &str {
     value.and_then(Value::as_str).unwrap_or("")
 }
@@ -494,6 +520,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "provider": "codex",
                     "providerTurnId": params.pointer("/turn/id").or_else(|| params.get("turnId")).and_then(Value::as_str),
                     "status": provider_status(status, true),
+                    "error": codex_terminal_error(params, event_type),
                 }),
             );
         }
@@ -1147,10 +1174,23 @@ mod tests {
     fn maps_terminal_and_usage_events_at_priority_zero() {
         let terminal = normalize_codex_notification(
             "turn/completed",
-            &json!({"turn": {"id": "provider-turn", "status": "failed"}}),
+            &json!({"turn": {
+                "id": "provider-turn",
+                "status": "failed",
+                "error": {
+                    "message": "provider rejected the turn",
+                    "accessToken": "secret-value",
+                },
+            }}),
         );
         assert_eq!(terminal[0].event_type, "turn.failed");
         assert_eq!(terminal[0].priority, EventPriority::P0);
+        assert_eq!(
+            terminal[0].payload["error"]["message"],
+            "provider rejected the turn"
+        );
+        assert_eq!(terminal[0].payload["error"]["accessToken"], "[REDACTED]");
+        assert!(!terminal[0].payload.to_string().contains("secret-value"));
         for (method, expected) in [
             ("turn/failed", "turn.failed"),
             ("turn/cancelled", "turn.cancelled"),
@@ -1160,6 +1200,12 @@ mod tests {
                 normalize_codex_notification(method, &json!({"turnId": "provider-turn"}));
             assert_eq!(terminal[0].event_type, expected);
             assert_eq!(terminal[0].priority, EventPriority::P0);
+            if method == "turn/failed" {
+                assert_eq!(
+                    terminal[0].payload["error"]["code"],
+                    "provider_terminal_error_missing"
+                );
+            }
         }
 
         let usage = normalize_codex_notification(

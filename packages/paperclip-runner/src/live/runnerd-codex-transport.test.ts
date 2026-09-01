@@ -377,6 +377,29 @@ it("binds a canonical runnerd terminal to the active provider turn", () => {
   });
 });
 
+it("rehydrates a canonical runnerd terminal error into the Codex turn", () => {
+  expect(
+    rehydrateRunnerdTurnNotification(
+      {
+        providerTurnId: "provider-turn-1",
+        status: "failed",
+        error: { code: "provider_failed", message: "provider rejected the turn" },
+      },
+      "opened-thread-1",
+      "provider-turn-1",
+      "turn/completed",
+    ),
+  ).toMatchObject({
+    threadId: "opened-thread-1",
+    turnId: "provider-turn-1",
+    turn: {
+      id: "provider-turn-1",
+      status: "failed",
+      error: { code: "provider_failed", message: "provider rejected the turn" },
+    },
+  });
+});
+
 it("preserves the provider identity on a late canonical terminal", () => {
   expect(
     rehydrateRunnerdTurnNotification(
@@ -1175,7 +1198,10 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }));
   try {
     const read = await restored.transport.request("thread/read", {});
-    expect(read.thread).toMatchObject({ id: "codex-thread-1" });
+    expect(read.thread).toMatchObject({
+      id: "codex-thread-1",
+      cwd: tmpdir(),
+    });
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned"))).mode & 0o222).toBe(0);
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md"))).mode & 0o222).toBe(0);
     const providerState = JSON.parse(
