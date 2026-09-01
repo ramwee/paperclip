@@ -1196,8 +1196,10 @@ fn redact_sensitive_text_values(input: &str) -> String {
     ] {
         for (start, _) in normalized.match_indices(key) {
             let before_is_name = start > 0 && is_name_byte(bytes[start - 1]);
-            let is_sensitive_name_suffix =
-                start > 0 && bytes[start - 1] == b'_' && key != "authorization";
+            let is_sensitive_name_suffix = before_is_name
+                && key != "authorization"
+                && (matches!(bytes[start - 1], b'_' | b'-')
+                    || matches!(key, "apikey" | "password" | "secret" | "ticket" | "token"));
             let mut separator = start + key.len();
             if (before_is_name && !is_sensitive_name_suffix)
                 || (separator < bytes.len() && is_name_byte(bytes[separator]))
@@ -1523,6 +1525,12 @@ mod tests {
         assert_eq!(
             redact_text("OPENAI_API_KEY=secret-value access_token=other-secret"),
             "OPENAI_API_KEY=[REDACTED] access_token=[REDACTED]"
+        );
+        assert_eq!(
+            redact_text(
+                "openai_api_key=first-secret openaiApiKey=second-secret clientSecret=third-secret refreshToken=fourth-secret"
+            ),
+            "openai_api_key=[REDACTED] openaiApiKey=[REDACTED] clientSecret=[REDACTED] refreshToken=[REDACTED]"
         );
     }
 
