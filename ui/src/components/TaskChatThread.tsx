@@ -1269,16 +1269,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         ) {
           settledRunIds.add(source.id);
           const code = meta?.errorCode ?? "native_runner_process_exited";
-          const retryDetail = meta?.scheduledRetryAt
-            ? "Retry scheduled automatically."
-            : "You can retry this message now.";
           const detail =
             code === "provider_frame_too_large"
-              ? `Provider output exceeded the safe limit. ${retryDetail}`
-              : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
+              ? "Provider output exceeded the safe limit."
+              : `The runner stopped before returning an answer (${code}).`;
           const id = `${source.id}:failure`;
+          const runAgent = meta?.agentId
+            ? agentMap?.get(meta.agentId)
+            : undefined;
+          const finishedAt =
+            meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt;
           entriesWithFailures.push({
-            ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
+            ms: toMs(finishedAt),
             order: 3,
             id,
             item: {
@@ -1287,6 +1289,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               variant: "interrupted",
               label: "Run failed",
               detail,
+              collapsible: true,
+              createdAtIso: finishedAt
+                ? new Date(finishedAt).toISOString()
+                : undefined,
+              runHref: runAgent
+                ? `/agents/${encodeURIComponent(runAgent.urlKey)}/runs/${encodeURIComponent(source.id)}`
+                : undefined,
             },
           });
         } else if (!lastCommentIdByRun.has(source.id)) {
