@@ -633,6 +633,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             let provider_item = item(params);
             let item_id = stable_id(string(provider_item.get("id")), "codex-item");
             let item_type = string(provider_item.get("type"));
+            let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
             if matches!(item_type, "commandExecution" | "mcpToolCall") {
                 let mut payload = json!({
@@ -691,7 +692,18 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                         "itemId": item_id,
                         "kind": bounded_text(item_type, 160),
                         "status": provider_status(string(provider_item.get("status")), completed),
-                        "channel": if item_type == "agentMessage" { "progress" } else { "detail" },
+                        "channel": if item_type == "agentMessage" && provider_phase == "final_answer" {
+                            "final"
+                        } else if item_type == "agentMessage" {
+                            "progress"
+                        } else {
+                            "detail"
+                        },
+                        "providerPhase": if provider_phase.is_empty() {
+                            Value::Null
+                        } else {
+                            Value::String(bounded_text(provider_phase, 160))
+                        },
                         "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
                     }),
                 );
@@ -1168,6 +1180,37 @@ mod tests {
         assert_eq!(events[0].payload["outputTruncated"], true);
         assert_eq!(events[0].payload["outputBytes"], 32);
         assert!(!events[0].payload.to_string().contains("top-secret"));
+    }
+
+    #[test]
+    fn maps_codex_final_answer_as_final_agent_message() {
+        let final_answer = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-final",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "status": "completed",
+                "text": "2 + 2 is 4.",
+            }}),
+        );
+        assert_eq!(final_answer[0].event_type, "item.completed");
+        assert_eq!(final_answer[0].payload["channel"], "final");
+        assert_eq!(final_answer[0].payload["providerPhase"], "final_answer");
+        assert_eq!(final_answer[0].payload["text"], "2 + 2 is 4.");
+
+        let commentary = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-progress",
+                "type": "agentMessage",
+                "phase": "commentary",
+                "status": "completed",
+                "text": "I am checking the result.",
+            }}),
+        );
+        assert_eq!(commentary[0].payload["channel"], "progress");
+        assert_eq!(commentary[0].payload["providerPhase"], "commentary");
     }
 
     #[test]
