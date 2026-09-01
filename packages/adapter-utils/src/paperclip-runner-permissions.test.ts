@@ -8,9 +8,9 @@ import {
 } from "./paperclip-runner-permissions.js";
 
 describe("Paperclip Runner permission defaults", () => {
-  it("defaults Codex to full auto", () => {
+  it("defaults Codex to approval for untrusted operations", () => {
     expect(resolvePaperclipRunnerPermissionMode("codex", undefined)).toBe(
-      "never",
+      "untrusted",
     );
   });
 

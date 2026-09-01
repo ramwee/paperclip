@@ -17,7 +17,7 @@ describe("paperclip_runner operational skill normalization", () => {
     expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", {})).toEqual({
       provider: "codex",
       model: "gpt-5.6-sol",
-      codexPermissionMode: "never",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
     });
   });
