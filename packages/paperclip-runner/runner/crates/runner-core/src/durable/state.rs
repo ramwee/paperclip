@@ -1131,26 +1131,152 @@ pub(crate) fn redact_text(input: &str) -> String {
     } else {
         (input, false)
     };
-    let normalized = bounded.to_ascii_lowercase();
-    if [
+    let mut redacted = redact_sensitive_text_values(bounded);
+    if truncated {
+        redacted.push_str("…[truncated]");
+    }
+    redacted
+}
+
+fn redact_sensitive_text_values(input: &str) -> String {
+    let normalized = input.to_ascii_lowercase();
+    let bytes = normalized.as_bytes();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+
+    let is_name_byte = |value: u8| value.is_ascii_alphanumeric() || value == b'_' || value == b'-';
+    let is_value_end = |value: u8| {
+        value.is_ascii_whitespace()
+            || matches!(
+                value,
+                b',' | b';' | b'&' | b'\'' | b'"' | b'`' | b')' | b']' | b'}'
+            )
+    };
+    let value_end = |start: usize| {
+        let mut end = start;
+        while end < bytes.len() && !is_value_end(bytes[end]) {
+            end += 1;
+        }
+        end
+    };
+
+    // Bearer credentials can appear outside a named header in provider errors.
+    for (start, _) in normalized.match_indices("bearer") {
+        let before_is_name = start > 0 && is_name_byte(bytes[start - 1]);
+        let mut value_start = start + "bearer".len();
+        if before_is_name || value_start >= bytes.len() || !bytes[value_start].is_ascii_whitespace()
+        {
+            continue;
+        }
+        while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
+            value_start += 1;
+        }
+        let end = value_end(value_start);
+        if end > value_start {
+            ranges.push((value_start, end));
+        }
+    }
+
+    // Redact only assignment values. Words such as "authorization" in a
+    // provider diagnostic are useful context and are not secrets by themselves.
+    for key in [
         "authorization",
-        "bearer ",
         "api_key",
         "apikey",
-        "password=",
-        "secret=",
-        "ticket=",
-        "token=",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
-    {
-        "[REDACTED diagnostic containing a sensitive marker]".to_owned()
-    } else if truncated {
-        format!("{bounded}…[truncated]")
-    } else {
-        bounded.to_owned()
+        "password",
+        "secret",
+        "ticket",
+        "token",
+    ] {
+        for (start, _) in normalized.match_indices(key) {
+            let before_is_name = start > 0 && is_name_byte(bytes[start - 1]);
+            let mut separator = start + key.len();
+            if before_is_name || (separator < bytes.len() && is_name_byte(bytes[separator])) {
+                continue;
+            }
+            while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
+                separator += 1;
+            }
+            if separator >= bytes.len() || !matches!(bytes[separator], b':' | b'=') {
+                continue;
+            }
+            let mut value_start = separator + 1;
+            while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
+                value_start += 1;
+            }
+            let quote = bytes
+                .get(value_start)
+                .copied()
+                .filter(|value| matches!(value, b'\'' | b'"'));
+            if quote.is_some() {
+                value_start += 1;
+            }
+            if key == "authorization" {
+                for scheme in ["bearer", "basic"] {
+                    if !normalized[value_start..].starts_with(scheme) {
+                        continue;
+                    }
+                    let after_scheme = value_start + scheme.len();
+                    if after_scheme >= bytes.len() || !bytes[after_scheme].is_ascii_whitespace() {
+                        continue;
+                    }
+                    value_start = after_scheme;
+                    while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
+                        value_start += 1;
+                    }
+                    break;
+                }
+            }
+            let end = if let Some(quote) = quote {
+                bytes[value_start..]
+                    .iter()
+                    .position(|value| *value == quote)
+                    .map_or(bytes.len(), |offset| value_start + offset)
+            } else if key == "authorization"
+                && !["bearer", "basic"].iter().any(|scheme| {
+                    normalized[separator + 1..]
+                        .trim_start()
+                        .to_ascii_lowercase()
+                        .starts_with(scheme)
+                })
+            {
+                let mut end = value_start;
+                while end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r' | b',' | b';' | b'&')
+                {
+                    end += 1;
+                }
+                end
+            } else {
+                value_end(value_start)
+            };
+            if end > value_start {
+                ranges.push((value_start, end));
+            }
+        }
     }
+
+    if ranges.is_empty() {
+        return input.to_owned();
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if let Some((_, previous_end)) = merged.last_mut() {
+            if start <= *previous_end {
+                *previous_end = (*previous_end).max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    for (start, end) in merged {
+        output.push_str(&input[cursor..start]);
+        output.push_str("[REDACTED]");
+        cursor = end;
+    }
+    output.push_str(&input[cursor..]);
+    output
 }
 
 fn current_timestamp() -> Result<String, DurableRunnerError> {
@@ -1356,6 +1482,38 @@ mod tests {
             sanitized["nested"]["authorizationBoundary"],
             json!("[REDACTED]")
         );
+    }
+
+    #[test]
+    fn diagnostic_redaction_preserves_context_and_removes_only_secret_values() {
+        assert_eq!(
+            redact_text("request failed: authorization service returned 401 Unauthorized"),
+            "request failed: authorization service returned 401 Unauthorized"
+        );
+        assert_eq!(
+            redact_text("401 Unauthorized: Authorization: Bearer secret-value; retry over HTTPS"),
+            "401 Unauthorized: Authorization: Bearer [REDACTED]; retry over HTTPS"
+        );
+        assert_eq!(
+            redact_text("request failed token=secret-value&reason=expired"),
+            "request failed token=[REDACTED]&reason=expired"
+        );
+        assert_eq!(
+            redact_text("Authorization: Basic dXNlcjpwYXNz retry"),
+            "Authorization: Basic [REDACTED] retry"
+        );
+        assert_eq!(
+            redact_text("login failed password=\"two word secret\" status=403"),
+            "login failed password=\"[REDACTED]\" status=403"
+        );
+    }
+
+    #[test]
+    fn diagnostic_redaction_still_bounds_retained_text() {
+        let output = redact_text(&format!("token=secret-value {}", "x".repeat(4_096)));
+        assert!(output.starts_with("token=[REDACTED] "));
+        assert!(output.ends_with("…[truncated]"));
+        assert!(!output.contains("secret-value"));
     }
 
     #[test]

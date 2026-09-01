@@ -575,6 +575,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let question_before_failed_turn = args
         .iter()
         .any(|value| value == "--question-before-failed-turn");
+    let fail_turn_immediately = args.iter().any(|value| value == "--fail-turn-immediately");
     let reuse_question_id = args.iter().any(|value| value == "--reuse-question-id");
     let pre_response_notification = args
         .iter()
@@ -897,6 +898,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
                 if fail_after_second_turn_start && turn_start_count == 2 {
                     return Err("configured failure after second turn start".into());
+                } else if fail_turn_immediately {
+                    send(json!({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": state.thread_id,
+                            "turn": {
+                                "id": provider_turn_id,
+                                "status": "failed",
+                                "error": {"message": "immediate provider failure"}
+                            }
+                        }
+                    }))?;
+                    state.active_turn_id = None;
+                    save_state(&state_path, &state)?;
                 } else if question_before_failed_turn {
                     send_question(&state)?;
                     send(json!({

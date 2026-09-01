@@ -993,6 +993,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
   #turnId = "";
+  #turnStartResponsePending = false;
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
   #closed = false;
@@ -1861,22 +1862,27 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       .join("\n");
     const pendingTurnId = `turn_lab_${randomUUID().replaceAll("-", "")}`;
     this.#turnId = pendingTurnId;
-    await this.#command("turn.start", { text: message });
-    // Command completion only means runnerd accepted the command. Codex assigns
-    // the authoritative turn identity in the subsequent turn/started event, so
-    // do not expose the temporary transport identity to the strict driver.
-    const deadline = Date.now() + 30_000;
-    while (this.#turnId === pendingTurnId && Date.now() < deadline) {
-      this.#throwIfFailed();
-      this.#pumpEvents();
-      if (this.#turnId !== pendingTurnId) break;
-      if (this.#handle?.child.exitCode !== null)
-        throw new Error("runnerd exited before provider turn startup");
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    this.#turnStartResponsePending = true;
+    try {
+      await this.#command("turn.start", { text: message });
+      // Command completion only means runnerd accepted the command. Codex assigns
+      // the authoritative turn identity in the subsequent turn/started event, so
+      // do not expose the temporary transport identity to the strict driver.
+      const deadline = Date.now() + 30_000;
+      while (this.#turnId === pendingTurnId && Date.now() < deadline) {
+        this.#throwIfFailed();
+        this.#pumpEvents();
+        if (this.#turnId !== pendingTurnId) break;
+        if (this.#handle?.child.exitCode !== null)
+          throw new Error("runnerd exited before provider turn startup");
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      if (this.#turnId === pendingTurnId)
+        throw new Error("runnerd did not report the provider turn identity");
+      return { turn: { id: this.#turnId, status: "inProgress" } };
+    } finally {
+      this.#turnStartResponsePending = false;
     }
-    if (this.#turnId === pendingTurnId)
-      throw new Error("runnerd did not report the provider turn identity");
-    return { turn: { id: this.#turnId, status: "inProgress" } };
   }
 
   async #command(
@@ -2219,6 +2225,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         } else if (traceResult === "retry") {
           this.#traceRehydrationSpoolOverflow = true;
         }
+      }
+      // The strict Codex driver must bind the provider turn from the response
+      // before it observes terminal notifications. A fast provider can commit
+      // start and terminal events in one durable batch, so stop after exposing
+      // turn/started while the request is pending. The regular pump drains the
+      // remaining events after the promise resolves.
+      if (
+        this.#turnStartResponsePending &&
+        notifications.some((notification) => notification.method === "turn/started")
+      ) {
+        return;
       }
     }
   }
