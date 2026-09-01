@@ -87,7 +87,7 @@ describe("buildPaperclipRunnerConfig", () => {
 
     expect(config).toMatchObject({
       provider: "codex",
-      codexPermissionMode: "never",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
       model: "gpt-5.4",
       timeoutSec: 0,
@@ -136,7 +136,7 @@ describe("buildPaperclipRunnerConfig", () => {
     }))).toMatchObject({
       provider: "codex",
       model: "gpt-5.4",
-      codexPermissionMode: "never",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
     });
   });
