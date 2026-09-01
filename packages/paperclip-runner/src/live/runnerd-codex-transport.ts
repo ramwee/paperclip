@@ -64,7 +64,7 @@ const CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS = `## Codex-style collaboration
 - Before the first tool call in a turn, send a brief commentary update describing the immediate work you are starting.
 - During tool-driven work, send concise commentary updates at meaningful transitions so the user can follow progress without opening raw logs.
 - Reserve \`report_progress\` for meaningful durable milestones on longer work. Do not call it merely to create a completion comment on a short run; Paperclip materializes the final assistant response as the durable completion comment.
-- Before semantic finalization, send one self-contained final assistant response with the outcome and verification. Treat the semantic completion tool as the last action and do not send a trailing acknowledgement.`;
+- Invoke the semantic completion tool exactly once before the final assistant response. After it succeeds, send one self-contained final response with the outcome and verification, then do not call another tool.`;
 
 export function withCodexCollaborationRuntimeInstructions(
   instructions: string,

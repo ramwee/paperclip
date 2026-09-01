@@ -43,9 +43,9 @@ it("adds Codex-style turn updates only when collaboration instructions are enabl
   expect(enabled).toContain(base);
   expect(enabled).toContain("Before the first tool call in a turn");
   expect(enabled).toContain("Do not call it merely to create a completion comment");
-  expect(enabled).toContain("Before semantic finalization");
-  expect(enabled).toContain("semantic completion tool as the last action");
-  expect(enabled).not.toContain("After semantic finalization");
+  expect(enabled).toContain("semantic completion tool exactly once before");
+  expect(enabled).toContain("After it succeeds");
+  expect(enabled).not.toContain("Before semantic finalization");
   expect(withCodexCollaborationRuntimeInstructions(base, false)).toBe(base);
 });
 
