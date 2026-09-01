@@ -56,6 +56,12 @@ describe("Codex value and workspace boundaries", () => {
         }),
       ).toBe(realpathSync.native(ordinaryHomeWorkspace));
       expect(() =>
+        validateCodexWorkingDirectory(protectedHomeDirectory, {
+          HOME: hostHome,
+          CODEX_HOME: codexHome,
+        }),
+      ).toThrow("cannot overlap sensitive host HOME state");
+      expect(() =>
         validateCodexWorkingDirectory(join(workspaceRoot, "future-run"), {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
         }),
@@ -75,7 +81,7 @@ describe("Codex value and workspace boundaries", () => {
           HOME: hostHome,
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
         }),
-      ).toThrow("outside the assigned workspace");
+      ).toThrow("cannot overlap sensitive host HOME state");
       expect(() =>
         validateCodexWorkingDirectory(outside, {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,

@@ -113,6 +113,12 @@ describe("redaction", () => {
       schema: "paperclip.run-performance-span.v1",
       span: "api.openai.com",
     })?.span).toBe(REDACTED_EVENT_VALUE);
+    expect(
+      redactEventPayload({
+        schema: "paperclip.run-performance-span.v1",
+        span: "runner.example.com",
+      })?.span,
+    ).toBe(REDACTED_EVENT_VALUE);
   });
 
   it("redacts payload objects while preserving null", () => {
