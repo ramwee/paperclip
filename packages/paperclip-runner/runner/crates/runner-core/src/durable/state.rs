@@ -1195,15 +1195,10 @@ fn redact_sensitive_text_values(input: &str) -> String {
         "token",
     ] {
         for (start, _) in normalized.match_indices(key) {
-            let before_is_name = start > 0 && is_name_byte(bytes[start - 1]);
-            let is_sensitive_name_suffix = before_is_name
-                && (matches!(bytes[start - 1], b'_' | b'-')
-                    || (key != "authorization"
-                        && matches!(key, "apikey" | "password" | "secret" | "ticket" | "token")));
             let mut separator = start + key.len();
-            if (before_is_name && !is_sensitive_name_suffix)
-                || (separator < bytes.len() && is_name_byte(bytes[separator]))
-            {
+            // Match the full sensitive name or a compound identifier that ends
+            // with it (for example OPENAI_API_KEY or proxyAuthorization).
+            if separator < bytes.len() && is_name_byte(bytes[separator]) {
                 continue;
             }
             while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
@@ -1537,6 +1532,12 @@ mod tests {
                 "Proxy-Authorization: Basic dXNlcjpwYXNz; proxy_authorization=Bearer other-secret"
             ),
             "Proxy-Authorization: Basic [REDACTED]; proxy_authorization=Bearer [REDACTED]"
+        );
+        assert_eq!(
+            redact_text(
+                "proxyAuthorization: Bearer first-secret; ProxyAuthorization: Basic second-secret"
+            ),
+            "proxyAuthorization: Bearer [REDACTED]; ProxyAuthorization: Basic [REDACTED]"
         );
     }
 
