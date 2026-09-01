@@ -606,7 +606,7 @@ describe("agent routes adapter validation", () => {
         adapterConfig: expect.objectContaining({
           provider: "codex",
           model: "gpt-5.6-sol",
-          codexPermissionMode: "never",
+          codexPermissionMode: "untrusted",
           lifecycleMode: "per_turn",
           paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
         }),
@@ -644,7 +644,7 @@ describe("agent routes adapter validation", () => {
         adapterConfig: expect.objectContaining({
           provider: "codex",
           model: "gpt-5.5",
-          codexPermissionMode: "never",
+          codexPermissionMode: "untrusted",
           lifecycleMode: "per_turn",
           paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
         }),
