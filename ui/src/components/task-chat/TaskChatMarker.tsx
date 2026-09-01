@@ -41,7 +41,7 @@ export function TaskChatMarker({
   if (item.collapsible) {
     return (
       <div
-        className="tc-enter-marker flex flex-col items-center py-1 text-xs text-muted-foreground"
+        className="tc-enter-marker flex flex-col items-start py-1 text-xs text-muted-foreground"
         data-testid="task-chat-collapsible-marker"
       >
         <div className="flex max-w-(--pct-85) items-center gap-1.5">

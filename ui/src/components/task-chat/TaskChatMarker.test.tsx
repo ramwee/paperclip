@@ -57,6 +57,11 @@ describe("TaskChatMarker", () => {
     )!;
     expect(toggle.textContent).toContain("Run failed");
     expect(toggle.textContent).toContain("5m ago");
+    expect(
+      container
+        .querySelector('[data-testid="task-chat-collapsible-marker"]')
+        ?.classList.contains("items-start"),
+    ).toBe(true);
     expect(container.querySelector(".border-dashed")).toBeNull();
     expect(container.textContent).not.toContain("runner_exited");
 
