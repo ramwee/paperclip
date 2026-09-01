@@ -49,10 +49,17 @@ describe("Codex value and workspace boundaries", () => {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
         }),
       ).toBe(realpathSync.native(workspace));
+      expect(() =>
+        validateCodexWorkingDirectory(ordinaryHomeWorkspace, {
+          HOME: hostHome,
+          CODEX_HOME: codexHome,
+        }),
+      ).toThrow("inside the host HOME requires an assigned workspace");
       expect(
         validateCodexWorkingDirectory(ordinaryHomeWorkspace, {
           HOME: hostHome,
           CODEX_HOME: codexHome,
+          PAPERCLIP_WORKSPACE_CWD: join(hostHome, "projects"),
         }),
       ).toBe(realpathSync.native(ordinaryHomeWorkspace));
       expect(() =>
