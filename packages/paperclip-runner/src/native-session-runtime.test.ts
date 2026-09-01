@@ -2877,6 +2877,117 @@ describe("executeNativeSession recovery", () => {
     ]);
   });
 
+  it("finalizes a durable semantic result without waiting for a provider terminal", async () => {
+    const lifecycle: string[] = [];
+    const cancel = vi.fn(() => {
+      lifecycle.push("cancelled");
+      return { cleanup: Promise.resolve() };
+    });
+    const providerResult = vi.fn(async () => null);
+    const close = vi.fn(async () => {
+      lifecycle.push("closed");
+    });
+    const events: PrpEvent[] = [];
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return {
+          resume: true,
+          typedEvents: true,
+          steering: false,
+          interruption: true,
+          structuredResult: true,
+        };
+      },
+      async *events() {
+        yield runnerEvent(1, "run.result.proposed", result);
+        await new Promise<never>(() => undefined);
+      },
+      async startTurn() {
+        return { turnId: "turn-recovery" };
+      },
+      cancel,
+      result: providerResult,
+      async snapshot() {
+        return {
+          backendKind: "mock",
+          sessionId: identity.sessionId,
+          identity,
+          providerSessionId: "provider-recovery",
+          cursor: "1",
+          activeTurnId: "turn-recovery",
+          pendingRuntimeRequests: [],
+          lineage: [],
+        };
+      },
+      close,
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "semantic-result-terminal-stall-backend",
+          version: "1",
+          capabilities: await session.capabilities(),
+        };
+      },
+      async openSession() {
+        return session;
+      },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event) {
+        events.push(structuredClone(event as PrpEvent));
+        const sourceEvents = events.filter(
+          (candidate) => candidate.sourceInstanceId === event.sourceInstanceId,
+        );
+        return {
+          cursor: events.length,
+          highestContiguousSourceSeq: highestContiguous(sourceEvents),
+          disposition: "committed",
+        };
+      },
+      async replayEvents(replay) {
+        const sourceEvents = events.filter(
+          (event) => event.sourceInstanceId === replay.sourceInstanceId,
+        );
+        return {
+          events: structuredClone(
+            sourceEvents.filter(
+              (event) => event.sourceSeq > replay.afterSourceSeq,
+            ),
+          ),
+          highestContiguousSourceSeq: highestContiguous(sourceEvents),
+        };
+      },
+      async completeRun() {},
+    };
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+      }),
+    ).resolves.toMatchObject({ result, terminal });
+
+    expect(cancel).toHaveBeenCalledWith({
+      reason: "Paperclip accepted the durable semantic result.",
+      signal: expect.any(AbortSignal),
+    });
+    expect(providerResult).not.toHaveBeenCalled();
+    expect(events.map((event) => event.eventType)).toEqual([
+      "run.result.proposed",
+      "run.result.accepted",
+      "run.terminal",
+    ]);
+    expect(lifecycle).toEqual(["cancelled", "closed"]);
+  });
+
   it("rejects a mismatched checkpoint before it mutates control-plane state", async () => {
     const openRun = vi.fn(async () => undefined);
     const checkpointSession = vi.fn(async () => undefined);
@@ -4233,12 +4344,87 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
+  it("does not replace a failed provider session when recovery policy forbids it", async () => {
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-failed-constrained",
+      identity,
+      providerSessionId: "provider-failed-constrained",
+      providerRecoveryPolicy: "same_session_only",
+      cursor: null,
+      activeTurnId: null,
+      semanticResult: null,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "failed",
+        runTerminalState: "failed",
+        reportedWorkDisposition: "yielded",
+      },
+      terminalTurns: [{ turnId: "turn-failed", fingerprint: "failed" }],
+      pendingRuntimeRequests: [],
+      lineage: [],
+    };
+    const openRun = vi.fn(async () => undefined);
+    const openSession = vi.fn(async () => {
+      throw new Error("replacement is forbidden");
+    });
+    const recoverSession = vi.fn();
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "constrained-recovery-backend",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+        };
+      },
+      openSession,
+      recoverSession,
+    };
+    const port: ControlPlanePort = {
+      openRun,
+      async loadSessionCheckpoint() {
+        return structuredClone(checkpoint);
+      },
+      async appendEvent() {
+        throw new Error("unexpected event");
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-constrained-recovery",
+        controlPlaneInstanceId: "control-constrained-recovery",
+      }),
+    ).rejects.toThrow(
+      "native_session_recovery_failed: provider session ended with a failed terminal",
+    );
+
+    expect(recoverSession).not.toHaveBeenCalled();
+    expect(openSession).not.toHaveBeenCalled();
+    expect(openRun).not.toHaveBeenCalled();
+  });
+
   it("replaces a provider session that already ended with a failed terminal", async () => {
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
       sessionId: "driver-failed",
       identity,
       providerSessionId: "provider-failed",
+      providerRecoveryPolicy: "allow_replacement_after_resume_failure",
       cursor: null,
       activeTurnId: null,
       semanticResult: null,

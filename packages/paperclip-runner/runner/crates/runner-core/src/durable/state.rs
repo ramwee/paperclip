@@ -1196,8 +1196,12 @@ fn redact_sensitive_text_values(input: &str) -> String {
     ] {
         for (start, _) in normalized.match_indices(key) {
             let before_is_name = start > 0 && is_name_byte(bytes[start - 1]);
+            let is_sensitive_name_suffix =
+                start > 0 && bytes[start - 1] == b'_' && key != "authorization";
             let mut separator = start + key.len();
-            if before_is_name || (separator < bytes.len() && is_name_byte(bytes[separator])) {
+            if (before_is_name && !is_sensitive_name_suffix)
+                || (separator < bytes.len() && is_name_byte(bytes[separator]))
+            {
                 continue;
             }
             while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
@@ -1515,6 +1519,10 @@ mod tests {
         assert_eq!(
             redact_text("login failed password=\"two word secret\" status=403"),
             "login failed password=\"[REDACTED]\" status=403"
+        );
+        assert_eq!(
+            redact_text("OPENAI_API_KEY=secret-value access_token=other-secret"),
+            "OPENAI_API_KEY=[REDACTED] access_token=[REDACTED]"
         );
     }
 

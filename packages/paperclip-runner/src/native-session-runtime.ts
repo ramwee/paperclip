@@ -17,10 +17,11 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import type {
-  PrpEvent,
-  PrpStructuredRunResult,
-  PrpTerminalState,
+import {
+  validatePrpStructuredRunResult,
+  type PrpEvent,
+  type PrpStructuredRunResult,
+  type PrpTerminalState,
 } from "./protocol/replay-contract.js";
 import { parsePaperclipQuestionSet } from "./contracts/question-set.js";
 
@@ -723,6 +724,7 @@ async function consumeTurn(
     let eventCount = 0;
     let highestContiguousSourceSeq = 0;
     let governedResult: PrpStructuredRunResult | null = null;
+    let resultSource: "semantic_result" | "governed_wait" | null = null;
     while (true) {
       const next = await eventIterator.next();
       if (stopConsumer) throw new Error("native event consumer stopped");
@@ -820,6 +822,14 @@ async function consumeTurn(
           // Invalid structured inputs remain rejected by the driver and never become durable questions.
         }
       }
+      if (governedResult === null && event.eventType === "run.result.proposed") {
+        const validation = validatePrpStructuredRunResult(event.payload);
+        if (!validation.ok) {
+          throw new Error("native_semantic_result_invalid");
+        }
+        governedResult = validation.result;
+        resultSource = "semantic_result";
+      }
       if (governedResult === null && resolveGovernedWait) {
         if (appendAbort.signal.aborted) {
           throw (
@@ -831,33 +841,41 @@ async function consumeTurn(
           turnId: event.turnId ?? null,
           event,
         });
-        if (governedResult !== null && !isTurnTerminal(event)) {
-          if (session.cancel === undefined) {
+        if (governedResult !== null) resultSource = "governed_wait";
+      }
+      if (governedResult !== null && !isTurnTerminal(event)) {
+        if (session.cancel === undefined) {
+          if (resultSource === "governed_wait") {
             throw new Error("native_governed_wait_cancellation_unavailable");
           }
-          // A governed result is already durable. Commit cancellation
-          // synchronously, then stop consuming provider output now rather
-          // than waiting for an abort-insensitive cleanup or terminal event.
-          // The returned promise owns cleanup only and remains observed in
-          // finally, where its wait is bounded and the session quarantined.
-          const cancellation = session.cancel({
-            reason:
-              "Paperclip parked this turn on a durable governed interaction.",
-            signal: appendAbort.signal,
-          });
-          governedCancellationCommitted = true;
-          const cleanup = cancellation.cleanup;
-          governedCleanupOperations.add(cleanup);
-          void cleanup
-            .catch(() => quarantineSession())
-            .finally(() => governedCleanupOperations.delete(cleanup));
-          return {
-            event,
-            eventCount,
-            highestContiguousSourceSeq,
-            governedResult,
-          };
+          // Backends without interruption support still need their provider
+          // terminal. Retain the validated result and continue consuming.
+          continue;
         }
+        // A semantic proposal or governed result is already durable. Commit
+        // cancellation synchronously, then stop consuming provider output now
+        // rather than waiting indefinitely for a provider terminal. The
+        // returned promise owns cleanup only and remains observed in finally,
+        // where its wait is bounded and the session quarantined.
+        const cancellation = session.cancel({
+          reason:
+            resultSource === "semantic_result"
+              ? "Paperclip accepted the durable semantic result."
+              : "Paperclip parked this turn on a durable governed interaction.",
+          signal: appendAbort.signal,
+        });
+        governedCancellationCommitted = true;
+        const cleanup = cancellation.cleanup;
+        governedCleanupOperations.add(cleanup);
+        void cleanup
+          .catch(() => quarantineSession())
+          .finally(() => governedCleanupOperations.delete(cleanup));
+        return {
+          event,
+          eventCount,
+          highestContiguousSourceSeq,
+          governedResult,
+        };
       }
       if (isTurnTerminal(event)) {
         return {
@@ -1317,7 +1335,7 @@ export async function executeNativeSession(
             reason: "driver does not support recovery",
           };
     if (!recovery.recovered || !recovery.session) {
-      if (!replacementAllowed && !failedProviderSession) {
+      if (!replacementAllowed) {
         throw new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );
