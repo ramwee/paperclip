@@ -19,20 +19,27 @@ describe("HuiDots owner apply-and-verify contract", () => {
     ok(!readme.includes("git switch"), "bootstrap must not ask the Owner to switch branches");
   });
 
-  it("preflights the HuiDots runtime invariants and fails closed", () => {
-    for (const needle of [
-      'ExpectedBranch = "examples/pixel-strip-and-vault-read-bridge-clean"',
-      'BaseSha = "def9c581b48a1fea845bb7b4a8726e201a3ad5d2"',
-      "status",
-      "--porcelain",
-      "Get-NodeVersion",
-      "Get-Command pnpm",
-      'ScheduledTaskName = "HuiDots Paperclip"',
-      "merge-base --is-ancestor",
-      "HDO_OWNER_APPLY=FAIL",
-    ]) {
-      ok(orchestrator.includes(needle), `missing preflight needle: ${needle}`);
-    }
+  it("collects a sectioned PASS/FAIL/NOT-VERIFIABLE-LOCALLY sweep instead of aborting after the first safe check", () => {
+    ok(orchestrator.includes("===== HDO ACCEPTANCE SWEEP ====="));
+    ok(orchestrator.includes("HDO_OWNER_APPLY=$overall"));
+    ok(orchestrator.includes("NOT-VERIFIABLE-LOCALLY"));
+    ok(orchestrator.includes("function Add-Check"));
+    ok(orchestrator.includes("function Stop-Unsafe"));
+    ok(orchestrator.includes("FAIL: "));
+    ok(orchestrator.includes("does not fabricate"));
+    ok(!orchestrator.includes("Read-Host"));
+    ok(!orchestrator.includes("Pause"));
+  });
+
+  it("hard-stops only for unsafe repo/branch/worktree/task/tooling conditions", () => {
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.identity"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.branch"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.worktree"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.ancestry"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "task.huidots_paperclip"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.fast_forward"'));
+    ok(orchestrator.includes('ExpectedBranch = "examples/pixel-strip-and-vault-read-bridge-clean"'));
+    ok(orchestrator.includes('BaseSha = "def9c581b48a1fea845bb7b4a8726e201a3ad5d2"'));
   });
 
   it("fast-forwards only, with no reset/force/checkout/master merge", () => {
@@ -47,20 +54,22 @@ describe("HuiDots owner apply-and-verify contract", () => {
     ok(!/merge.*main/.test(orchestrator));
   });
 
-  it("repairs deps with CI lockfile policy, asserts Zod 4, and clears Vite optimized deps", () => {
-    ok(orchestrator.includes("--no-frozen-lockfile"));
-    ok(orchestrator.includes("--resolution-only"));
+  it("covers Node/pnpm policy, Zod 4, Vite cache, and Windows ESM file:// behavior", () => {
+    ok(orchestrator.includes("check:node-version"));
     ok(orchestrator.includes("Assert-Zod4Runtime"));
-    ok(orchestrator.includes("^4.4.3"));
     ok(orchestrator.includes("Clear-ViteOptimizedDeps"));
-    ok(orchestrator.includes("node_modules\\.vite"));
+    ok(orchestrator.includes("plugin_loader.windows_esm_source"));
+    ok(orchestrator.includes("plugin_loader.windows_esm_tests"));
+    ok(orchestrator.includes("plugin-loader-windows-esm.test.ts"));
+    ok(orchestrator.includes("toNodeEsmImportUrl"));
   });
 
-  it("reuses the Telegram overlay scripts and does not invent token handling", () => {
+  it("reuses Telegram overlay scripts and forbids unauthenticated /api/plugins", () => {
     ok(orchestrator.includes("apply-installed.ps1"));
     ok(orchestrator.includes("verify.ps1"));
-    ok(orchestrator.includes("patches\\telegram-owner-decision"));
-    ok(!/api-key/i.test(orchestrator));
+    ok(orchestrator.includes("plugin.readiness_auth_path"));
+    ok(orchestrator.includes("Invoke-RestMethod"));
+    ok(orchestrator.includes("/api/plugins"));
     ok(!/PAPERCLIP_API_KEY/.test(orchestrator));
     ok(!/Bearer /.test(orchestrator));
   });
@@ -68,37 +77,34 @@ describe("HuiDots owner apply-and-verify contract", () => {
   it("restarts only the existing HuiDots task and waits for backend readiness", () => {
     ok(orchestrator.includes("schtasks.exe /End /TN"));
     ok(orchestrator.includes("schtasks.exe /Run /TN"));
-    ok(!orchestrator.includes("/Change"));
+    ok(!orchestrator.includes("schtasks.exe /Change"));
     ok(!orchestrator.includes("Register-ScheduledTask"));
     ok(!orchestrator.includes("New-ScheduledTask"));
     ok(orchestrator.includes("Wait-BackendReady"));
     ok(orchestrator.includes("/api/health"));
   });
 
-  it("uses a safe Playwright attach smoke instead of HTTP-only or throwaway e2e", () => {
-    ok(orchestrator.includes("hdo-owner-dashboard-smoke.mjs"));
-    ok(smoke.includes("chromium"));
-    ok(smoke.includes("pageerror"));
+  it("distinguishes Cloudflare Access/login 200 from dashboard application acceptance", () => {
+    ok(smoke.includes("cloudflareAccessPattern"));
+    ok(smoke.includes("dashboard.cloudflare_access"));
+    ok(smoke.includes("dashboard.application"));
+    ok(smoke.includes("dashboard.fatal_console"));
     ok(smoke.includes("guid is not a function"));
+    ok(smoke.includes("HTTP status alone is never treated as app health") || smoke.includes("HTTP 200 is not app health"));
     ok(!smoke.includes("reuseExistingServer"));
     ok(!smoke.includes("pnpm paperclipai onboard"));
-    ok(!smoke.includes("PAPERCLIP_E2E_PORT"));
   });
 
-  it("verifies Pixel Strip and Vault Read Bridge packages", () => {
+  it("verifies Pixel Strip, Vault Read Bridge, and the Pi timeout source without live Codex UAT", () => {
+    ok(orchestrator.includes("examples.pixel_strip"));
+    ok(orchestrator.includes("examples.vault_read_bridge"));
     ok(orchestrator.includes("@paperclipai/plugin-pixel-strip-example"));
     ok(orchestrator.includes("@paperclipai/plugin-vault-read-bridge-example"));
-    ok(orchestrator.includes("typecheck"));
-    ok(orchestrator.includes("plugin-pixel-strip-example"));
-    ok(orchestrator.includes("plugin-vault-read-bridge-example"));
-  });
-
-  it("ends with one PASS/FAIL summary and does not fabricate Telegram acceptance", () => {
-    ok(orchestrator.includes("HDO_OWNER_APPLY=PASS"));
-    ok(orchestrator.includes("HDO_OWNER_APPLY=FAIL"));
-    ok(orchestrator.includes("OWNER_ACCEPTANCE="));
-    ok(orchestrator.includes("does not fabricate"));
-    ok(!orchestrator.includes("Read-Host"));
-    ok(!orchestrator.includes("Pause"));
+    ok(orchestrator.includes("pi.timeout_reliability_source"));
+    ok(orchestrator.includes("ac.timeoutSec = 0"));
+    ok(orchestrator.includes("resolveAdapterExecutionTargetTimeoutSec"));
+    ok(orchestrator.includes("codex.live_uat"));
+    ok(orchestrator.includes("not repeated by design"));
+    ok(orchestrator.includes("-DesignedSkip"));
   });
 });

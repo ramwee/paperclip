@@ -10,7 +10,7 @@ After this PR is reviewed, stay on the HuiDots runtime checkout (`examples/pixel
 git fetch origin fix/hdo-windows-dashboard-telegram-forward-port; git show origin/fix/hdo-windows-dashboard-telegram-forward-port:patches/hdo-owner-apply-and-verify.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
 ```
 
-That command fetches the reviewed forward-port branch, then runs `patches/hdo-owner-apply-and-verify.ps1`. The orchestrator keeps you on the current local branch, fast-forwards only when the history is a clean descendant of `def9c581`, reuses `apply-installed.ps1` / `verify.ps1`, restarts only the existing **HuiDots Paperclip** scheduled task, and prints one `HDO_OWNER_APPLY=PASS` or `HDO_OWNER_APPLY=FAIL` line. A genuine Telegram Approve/Revise remains a separate Owner acceptance action.
+That command fetches the reviewed forward-port branch, then runs `patches/hdo-owner-apply-and-verify.ps1`. The orchestrator keeps you on the current local branch, fast-forwards only when the history is a clean descendant of `def9c581`, reuses `apply-installed.ps1` / `verify.ps1`, and restarts only the existing **HuiDots Paperclip** scheduled task. It runs one affected-surface acceptance sweep and prints a single sectioned `HDO_OWNER_APPLY=PASS` / `FAIL` / `NOT-VERIFIABLE-LOCALLY` report with every failing check name. It stops immediately only when continuing would be unsafe (wrong repo/branch/ancestry, dirty worktree, or missing required task/tooling). A genuine Telegram Approve/Revise remains a separate Owner acceptance action.
 
 ## Pins
 

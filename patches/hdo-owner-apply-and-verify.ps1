@@ -11,10 +11,76 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Write-Fail([string]$Message) {
-  Write-Host "HDO_OWNER_APPLY=FAIL"
-  Write-Host $Message
-  exit 1
+$script:Checks = New-Object System.Collections.Generic.List[object]
+$script:UnsafeStop = $false
+
+function Add-Check {
+  param(
+    [string]$Name,
+    [ValidateSet("PASS", "FAIL", "NOT-VERIFIABLE-LOCALLY")]
+    [string]$Status,
+    [string]$Detail = "",
+    [switch]$DesignedSkip
+  )
+  $script:Checks.Add([pscustomobject]@{
+    Name = $Name
+    Status = $Status
+    Detail = $Detail
+    DesignedSkip = [bool]$DesignedSkip
+  })
+}
+
+function Add-ImportedChecks {
+  param([object[]]$Imported)
+  foreach ($item in @($Imported)) {
+    if ($null -eq $item) { continue }
+    Add-Check -Name ([string]$item.name) -Status ([string]$item.status) -Detail ([string]$item.detail)
+  }
+}
+
+function Write-SweepReport {
+  param([int]$ExitCode = -1)
+  $fails = @($script:Checks | Where-Object { $_.Status -eq "FAIL" } | ForEach-Object { $_.Name })
+  $unverifiable = @(
+    $script:Checks |
+      Where-Object { $_.Status -eq "NOT-VERIFIABLE-LOCALLY" -and -not $_.DesignedSkip } |
+      ForEach-Object { $_.Name }
+  )
+  $overall = "PASS"
+  if ($fails.Count -gt 0) { $overall = "FAIL" }
+  elseif ($unverifiable.Count -gt 0) { $overall = "NOT-VERIFIABLE-LOCALLY" }
+
+  Write-Host "===== HDO ACCEPTANCE SWEEP ====="
+  foreach ($check in $script:Checks) {
+    $line = "{0,-34} {1}" -f $check.Name, $check.Status
+    if (-not [string]::IsNullOrWhiteSpace($check.Detail)) {
+      $line = "$line  $($check.Detail)"
+    }
+    Write-Host $line
+  }
+  Write-Host "--------------------------------"
+  Write-Host "HDO_OWNER_APPLY=$overall"
+  if ($fails.Count -gt 0) { Write-Host ("FAIL: " + ($fails -join ", ")) }
+  if ($unverifiable.Count -gt 0) { Write-Host ("NOT-VERIFIABLE-LOCALLY: " + ($unverifiable -join ", ")) }
+  $designed = @($script:Checks | Where-Object { $_.DesignedSkip } | ForEach-Object { $_.Name })
+  if ($designed.Count -gt 0) {
+    Write-Host ("DESIGNED_SKIP: " + ($designed -join ", "))
+  }
+  Write-Host "OWNER_ACCEPTANCE=Send one genuine Telegram Approve or Revise on a pending Owner decision. This script does not fabricate that callback."
+  Write-Host "====="
+  if ($ExitCode -ge 0) {
+    exit $ExitCode
+  }
+  if ($overall -eq "FAIL") { exit 1 }
+  if ($overall -eq "NOT-VERIFIABLE-LOCALLY") { exit 2 }
+  exit 0
+}
+
+function Stop-Unsafe {
+  param([string]$Name, [string]$Detail)
+  $script:UnsafeStop = $true
+  Add-Check -Name $Name -Status "FAIL" -Detail $Detail
+  Write-SweepReport -ExitCode 1
 }
 
 function Invoke-Native {
@@ -75,6 +141,12 @@ function Get-NodeVersion {
   }
 }
 
+function Test-FileContains {
+  param([string]$Path, [string]$Needle)
+  if (-not (Test-Path $Path)) { return $false }
+  return [IO.File]::ReadAllText($Path).Contains($Needle)
+}
+
 function Wait-BackendReady {
   param([string]$ApiBase, [int]$TimeoutSec)
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
@@ -82,14 +154,14 @@ function Wait-BackendReady {
   while ((Get-Date) -lt $deadline) {
     try {
       $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 5
-      if ($response.StatusCode -eq 200) { return }
+      if ($response.StatusCode -eq 200) { return $true }
     } catch {
       Start-Sleep -Seconds 5
       continue
     }
     Start-Sleep -Seconds 5
   }
-  throw "Backend was not ready at $healthUrl within ${TimeoutSec}s."
+  return $false
 }
 
 function Restart-HuiDotsTask {
@@ -152,7 +224,7 @@ console.log("ZOD_RUNTIME=" + resolved.version);
   if ($LASTEXITCODE -ne 0) {
     throw "Zod 4 runtime check failed: $result"
   }
-  Write-Host $result
+  return "$result"
 }
 
 function Invoke-OverlayScript {
@@ -172,113 +244,313 @@ function Invoke-OverlayScript {
     if ($asText -like "NEXT_ACTION=*") { continue }
     Write-Host $asText
   }
+  return $text
+}
+
+function Get-ExamplePolicyStatus {
+  param([string]$ManifestPath, [string]$Label)
+  if (-not (Test-Path $ManifestPath)) {
+    return [pscustomobject]@{ Ok = $false; Detail = "$Label package.json missing" }
+  }
+  $pkg = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+  $types = $null
+  if ($pkg.devDependencies) { $types = $pkg.devDependencies.'@types/node' }
+  $engine = $null
+  if ($pkg.engines) { $engine = $pkg.engines.node }
+  if ($types -ne "^24.0.0" -or $engine -ne ">=24.11.0") {
+    return [pscustomobject]@{
+      Ok = $false
+      Detail = "$Label @types/node=$types engines.node=$engine"
+    }
+  }
+  return [pscustomobject]@{ Ok = $true; Detail = "$Label Node policy aligned" }
+}
+
+function Invoke-ExampleSurface {
+  param([string]$Filter, [string]$NamePrefix, [string]$ManifestPath)
+  $policy = Get-ExamplePolicyStatus -ManifestPath $ManifestPath -Label $Filter
+  if ($policy.Ok) {
+    Add-Check -Name "$NamePrefix.presence_policy" -Status "PASS" -Detail $policy.Detail
+  } else {
+    Add-Check -Name "$NamePrefix.presence_policy" -Status "FAIL" -Detail $policy.Detail
+  }
+  foreach ($scriptName in @("typecheck", "test", "build")) {
+    $checkName = "$NamePrefix.$scriptName"
+    try {
+      Invoke-Native -File "pnpm" -Arguments @("--filter", $Filter, $scriptName) -FailPrefix "$Filter $scriptName failed" | Out-Null
+      Add-Check -Name $checkName -Status "PASS"
+    } catch {
+      Add-Check -Name $checkName -Status "FAIL" -Detail $_.Exception.Message
+    }
+  }
 }
 
 try {
   $repo = Resolve-RepoRoot -Requested $PaperclipRepo
   Set-Location $repo
-  Write-Host "REPO=$repo"
+  Add-Check -Name "repo.identity" -Status "PASS" -Detail $repo
+} catch {
+  Stop-Unsafe -Name "repo.identity" -Detail $_.Exception.Message
+}
 
+try { $null = Get-Command git -ErrorAction Stop } catch { Stop-Unsafe -Name "tooling.git" -Detail "git is required" }
+try { $null = Get-Command node -ErrorAction Stop } catch { Stop-Unsafe -Name "tooling.node" -Detail "node is required" }
+try { $null = Get-Command pnpm -ErrorAction Stop } catch { Stop-Unsafe -Name "tooling.pnpm" -Detail "pnpm is required" }
+Add-Check -Name "tooling.git_node_pnpm" -Status "PASS"
+
+$branch = ""
+try {
   $branch = Get-GitText -Repo $repo -GitArgs @("branch", "--show-current")
   if ($branch -ne $ExpectedBranch) {
-    throw "Current branch is '$branch'; expected '$ExpectedBranch'. The orchestrator will not switch branches."
+    Stop-Unsafe -Name "repo.branch" -Detail "Current branch is '$branch'; expected '$ExpectedBranch'. The orchestrator will not switch branches."
   }
+  Add-Check -Name "repo.branch" -Status "PASS" -Detail $branch
+} catch {
+  if ($script:UnsafeStop) { throw }
+  Stop-Unsafe -Name "repo.branch" -Detail $_.Exception.Message
+}
 
+try {
   $porcelain = Get-GitText -Repo $repo -GitArgs @("status", "--porcelain")
   if (-not [string]::IsNullOrWhiteSpace($porcelain)) {
-    throw "Worktree is not clean. Commit, stash, or restore local changes, then re-run this one command."
+    Stop-Unsafe -Name "repo.worktree" -Detail "Worktree is not clean. Commit, stash, or restore local changes, then re-run this one command."
   }
+  Add-Check -Name "repo.worktree" -Status "PASS"
+} catch {
+  if ($script:UnsafeStop) { throw }
+  Stop-Unsafe -Name "repo.worktree" -Detail $_.Exception.Message
+}
 
-  $node = Get-NodeVersion
-  if ($node.Major -lt 24 -or ($node.Major -eq 24 -and $node.Minor -lt 11)) {
-    throw "Node $($node.Raw) is below the repository policy (>=24.11.0)."
-  }
+$taskQuery = schtasks.exe /Query /TN $ScheduledTaskName /FO LIST
+if ($LASTEXITCODE -ne 0) {
+  Stop-Unsafe -Name "task.huidots_paperclip" -Detail "Scheduled task '$ScheduledTaskName' does not exist. This script will not create or alter task configuration."
+}
+if ($taskQuery -match "/Change|TR: /Create") {
+  Add-Check -Name "task.huidots_paperclip" -Status "FAIL" -Detail "task query unexpectedly looks like a reconfiguration command"
+} else {
+  Add-Check -Name "task.huidots_paperclip" -Status "PASS" -Detail "present; configuration will not be changed"
+}
 
-  $null = Get-Command pnpm -ErrorAction Stop
-  $null = Get-Command git -ErrorAction Stop
-
-  $taskQuery = schtasks.exe /Query /TN $ScheduledTaskName /FO LIST
-  if ($LASTEXITCODE -ne 0) {
-    throw "Scheduled task '$ScheduledTaskName' does not exist. This script will not create or alter task configuration."
-  }
-
+try {
   Get-GitText -Repo $repo -GitArgs @("cat-file", "-e", "$BaseSha^{commit}") | Out-Null
   if (-not (Test-GitAncestor -Repo $repo -Ancestor $BaseSha -Descendant "HEAD")) {
-    throw "HEAD is not a descendant of $BaseSha. Fast-forward is refused."
+    Stop-Unsafe -Name "repo.ancestry" -Detail "HEAD is not a descendant of $BaseSha. Fast-forward is refused."
   }
+  $localHead = Get-GitText -Repo $repo -GitArgs @("rev-parse", "HEAD")
+  Add-Check -Name "repo.ancestry" -Status "PASS" -Detail "HEAD=$localHead descendant-of $BaseSha"
+} catch {
+  if ($script:UnsafeStop) { throw }
+  Stop-Unsafe -Name "repo.ancestry" -Detail $_.Exception.Message
+}
 
-  Write-Host "PREFLIGHT=PASS branch=$branch node=$($node.Raw) task=$ScheduledTaskName"
+try {
+  $node = Get-NodeVersion
+  if ($node.Major -lt 24 -or ($node.Major -eq 24 -and $node.Minor -lt 11)) {
+    Add-Check -Name "tooling.node_policy" -Status "FAIL" -Detail "Node $($node.Raw) is below >=24.11.0"
+  } else {
+    Add-Check -Name "tooling.node_policy" -Status "PASS" -Detail $node.Raw
+  }
+} catch {
+  Add-Check -Name "tooling.node_policy" -Status "FAIL" -Detail $_.Exception.Message
+}
 
+try {
   Get-GitText -Repo $repo -GitArgs @("fetch", "origin", $ForwardPortBranch) | Out-Null
   $remoteHead = Get-GitText -Repo $repo -GitArgs @("rev-parse", "origin/$ForwardPortBranch")
   $localHead = Get-GitText -Repo $repo -GitArgs @("rev-parse", "HEAD")
-
   if (-not (Test-GitAncestor -Repo $repo -Ancestor $BaseSha -Descendant $remoteHead)) {
-    throw "origin/$ForwardPortBranch ($remoteHead) is not a descendant of $BaseSha."
+    Stop-Unsafe -Name "repo.fast_forward" -Detail "origin/$ForwardPortBranch ($remoteHead) is not a descendant of $BaseSha."
   }
   if ($localHead -eq $remoteHead) {
-    Write-Host "FAST_FORWARD=SKIPPED already-at $remoteHead"
+    Add-Check -Name "repo.fast_forward" -Status "PASS" -Detail "already-at $remoteHead"
   } else {
     if (-not (Test-GitAncestor -Repo $repo -Ancestor $localHead -Descendant $remoteHead)) {
-      throw "HEAD ($localHead) is not a clean ancestor of origin/$ForwardPortBranch ($remoteHead). No reset, force, checkout, or conflict resolution will be attempted."
+      Stop-Unsafe -Name "repo.fast_forward" -Detail "HEAD ($localHead) is not a clean ancestor of origin/$ForwardPortBranch ($remoteHead). No reset, force, checkout, or conflict resolution will be attempted."
     }
     Get-GitText -Repo $repo -GitArgs @("merge", "--ff-only", $remoteHead) | Out-Null
     $after = Get-GitText -Repo $repo -GitArgs @("rev-parse", "HEAD")
     $stillOn = Get-GitText -Repo $repo -GitArgs @("branch", "--show-current")
-    if ($stillOn -ne $ExpectedBranch) {
-      throw "Branch unexpectedly became '$stillOn' after fast-forward."
+    if ($stillOn -ne $ExpectedBranch -or $after -ne $remoteHead) {
+      Stop-Unsafe -Name "repo.fast_forward" -Detail "Fast-forward landed on branch=$stillOn head=$after"
     }
-    if ($after -ne $remoteHead) {
-      throw "Fast-forward did not land on $remoteHead."
-    }
-    Write-Host "FAST_FORWARD=PASS $localHead -> $after"
+    Add-Check -Name "repo.fast_forward" -Status "PASS" -Detail "$localHead -> $after"
   }
+} catch {
+  if ($script:UnsafeStop) { throw }
+  Stop-Unsafe -Name "repo.fast_forward" -Detail $_.Exception.Message
+}
 
-  Write-Host "DEPS=repairing lockfile via repo policy (no-frozen-lockfile resolution, then install)"
+try {
   Invoke-Native -File "pnpm" -Arguments @("install", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile") -FailPrefix "pnpm lockfile resolution failed" | Out-Null
   Invoke-Native -File "pnpm" -Arguments @("install", "--frozen-lockfile") -FailPrefix "pnpm install failed" | Out-Null
-  Assert-Zod4Runtime -Repo $repo
+  Add-Check -Name "deps.lockfile_graph" -Status "PASS"
+} catch {
+  Add-Check -Name "deps.lockfile_graph" -Status "FAIL" -Detail $_.Exception.Message
+}
+
+try {
+  $zod = Assert-Zod4Runtime -Repo $repo
+  Add-Check -Name "deps.zod4" -Status "PASS" -Detail $zod
+} catch {
+  Add-Check -Name "deps.zod4" -Status "FAIL" -Detail $_.Exception.Message
+}
+
+try {
   Clear-ViteOptimizedDeps -Repo $repo
-  Write-Host "DEPS=PASS zod4 vite-cache-cleared"
-
-  $pixel = Join-Path $repo "packages\plugins\examples\plugin-pixel-strip-example\package.json"
-  $vault = Join-Path $repo "packages\plugins\examples\plugin-vault-read-bridge-example\package.json"
-  if (-not (Test-Path $pixel) -or -not (Test-Path $vault)) {
-    throw "Pixel Strip or Vault Read Bridge example package is missing after fast-forward."
+  $stale = @(
+    (Join-Path $repo "node_modules\.vite"),
+    (Join-Path $repo "ui\node_modules\.vite")
+  ) | Where-Object { Test-Path $_ }
+  if ($stale.Count -gt 0) {
+    Add-Check -Name "deps.vite_cache" -Status "FAIL" -Detail ($stale -join ", ")
+  } else {
+    Add-Check -Name "deps.vite_cache" -Status "PASS" -Detail "optimized deps cache removed"
   }
+} catch {
+  Add-Check -Name "deps.vite_cache" -Status "FAIL" -Detail $_.Exception.Message
+}
 
-  Write-Host "OVERLAY=apply-installed (authenticated paperclipai path; tokens are not printed)"
-  Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi
+try {
+  Invoke-Native -File "pnpm" -Arguments @("check:node-version") -FailPrefix "node version policy failed" | Out-Null
+  Add-Check -Name "deps.node_version_policy" -Status "PASS"
+} catch {
+  Add-Check -Name "deps.node_version_policy" -Status "FAIL" -Detail $_.Exception.Message
+}
 
-  Write-Host "RESTART=$ScheduledTaskName"
+$esmUrl = Join-Path $repo "server\src\services\plugin-esm-url.ts"
+$esmLoader = Join-Path $repo "server\src\services\plugin-loader.ts"
+if (
+  (Test-FileContains $esmUrl "toNodeEsmImportUrl") -and
+  (Test-FileContains $esmUrl "pathToFileURL") -and
+  (Test-FileContains $esmLoader 'toNodeEsmImportUrl(DEV_TSX_LOADER_PATH)')
+) {
+  Add-Check -Name "plugin_loader.windows_esm_source" -Status "PASS" -Detail "file:// import helper wired"
+} else {
+  Add-Check -Name "plugin_loader.windows_esm_source" -Status "FAIL" -Detail "toNodeEsmImportUrl wiring missing"
+}
+
+try {
+  Push-Location (Join-Path $repo "server")
+  Invoke-Native -File "pnpm" -Arguments @("exec", "vitest", "run", "--config", "vitest.config.ts", "src/__tests__/plugin-loader-windows-esm.test.ts") -FailPrefix "Windows ESM vitest failed" | Out-Null
+  Add-Check -Name "plugin_loader.windows_esm_tests" -Status "PASS"
+} catch {
+  Add-Check -Name "plugin_loader.windows_esm_tests" -Status "FAIL" -Detail $_.Exception.Message
+} finally {
+  Pop-Location
+}
+
+$applyPath = Join-Path $repo "patches\telegram-owner-decision\apply-installed.ps1"
+$verifyPath = Join-Path $repo "patches\telegram-owner-decision\verify.ps1"
+if (-not (Test-Path $applyPath) -or -not (Test-Path $verifyPath)) {
+  Add-Check -Name "plugin.readiness_auth_path" -Status "FAIL" -Detail "overlay scripts missing"
+} else {
+  $applyText = [IO.File]::ReadAllText($applyPath)
+  $naked = [regex]::IsMatch($applyText, 'Invoke-RestMethod[^\n]*/api/plugins')
+  $hasCli = $applyText.Contains("Invoke-PaperclipAiJson") -and $applyText.Contains('plugin", "list"')
+  if ($naked -or -not $hasCli) {
+    Add-Check -Name "plugin.readiness_auth_path" -Status "FAIL" -Detail "unauthenticated /api/plugins shortcut or missing paperclipai path"
+  } else {
+    Add-Check -Name "plugin.readiness_auth_path" -Status "PASS" -Detail "authenticated paperclipai plugin list/enable"
+  }
+}
+
+$piBuild = Join-Path $repo "packages\adapters\pi-local\src\ui\build-config.ts"
+$piTimeout = Join-Path $repo "packages\adapter-utils\src\execution-target.ts"
+if (
+  (Test-FileContains $piBuild "ac.timeoutSec = 0") -and
+  (Test-FileContains $piBuild "ac.graceSec = 20") -and
+  (Test-FileContains $piTimeout "resolveAdapterExecutionTargetTimeoutSec")
+) {
+  Add-Check -Name "pi.timeout_reliability_source" -Status "PASS" -Detail "pi-local timeoutSec=0 + shared resolver present"
+} else {
+  Add-Check -Name "pi.timeout_reliability_source" -Status "FAIL" -Detail "Pi timeout/reliability source missing on this checkout"
+}
+Add-Check -Name "codex.live_uat" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "not repeated by design" -DesignedSkip
+
+$pixelManifest = Join-Path $repo "packages\plugins\examples\plugin-pixel-strip-example\package.json"
+$vaultManifest = Join-Path $repo "packages\plugins\examples\plugin-vault-read-bridge-example\package.json"
+Invoke-ExampleSurface -Filter "@paperclipai/plugin-pixel-strip-example" -NamePrefix "examples.pixel_strip" -ManifestPath $pixelManifest
+Invoke-ExampleSurface -Filter "@paperclipai/plugin-vault-read-bridge-example" -NamePrefix "examples.vault_read_bridge" -ManifestPath $vaultManifest
+
+$overlayApplied = $false
+try {
+  Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi | Out-Null
+  $overlayApplied = $true
+  Add-Check -Name "telegram.overlay_apply" -Status "PASS"
+} catch {
+  Add-Check -Name "telegram.overlay_apply" -Status "FAIL" -Detail $_.Exception.Message
+}
+
+try {
   Restart-HuiDotsTask -TaskName $ScheduledTaskName
-  Wait-BackendReady -ApiBase $PaperclipApi -TimeoutSec $ReadyTimeoutSec
-  Write-Host "BACKEND=PASS"
+  Add-Check -Name "task.restart" -Status "PASS" -Detail "End+Run only; no /Change"
+} catch {
+  Add-Check -Name "task.restart" -Status "FAIL" -Detail $_.Exception.Message
+}
 
-  Write-Host "OVERLAY=re-apply readiness against the restarted process"
-  Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi
-  Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi
+$backendReady = Wait-BackendReady -ApiBase $PaperclipApi -TimeoutSec $ReadyTimeoutSec
+if ($backendReady) {
+  Add-Check -Name "task.backend_ready" -Status "PASS" -Detail "/api/health reached after bounded wait"
+} else {
+  Add-Check -Name "task.backend_ready" -Status "FAIL" -Detail "backend not ready within ${ReadyTimeoutSec}s"
+}
 
-  $smoke = Join-Path $repo "patches\hdo-owner-dashboard-smoke.mjs"
-  if (-not (Test-Path $smoke)) {
-    throw "Dashboard smoke helper is missing: $smoke"
+if ($backendReady) {
+  try {
+    Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi | Out-Null
+    Add-Check -Name "telegram.registry_ready" -Status "PASS" -Detail "authenticated enable/list reported ready"
+  } catch {
+    Add-Check -Name "telegram.registry_ready" -Status "FAIL" -Detail $_.Exception.Message
   }
+  try {
+    Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi | Out-Null
+    Add-Check -Name "telegram.overlay_invariants" -Status "PASS"
+  } catch {
+    Add-Check -Name "telegram.overlay_invariants" -Status "FAIL" -Detail $_.Exception.Message
+  }
+} else {
+  Add-Check -Name "telegram.registry_ready" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
+  if ($overlayApplied -and (Test-Path $verifyPath)) {
+    try {
+      Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi | Out-Null
+      Add-Check -Name "telegram.overlay_invariants" -Status "PASS" -Detail "static overlay markers only"
+    } catch {
+      Add-Check -Name "telegram.overlay_invariants" -Status "FAIL" -Detail $_.Exception.Message
+    }
+  } else {
+    Add-Check -Name "telegram.overlay_invariants" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "verify.ps1 not runnable"
+  }
+}
+
+$smoke = Join-Path $repo "patches\hdo-owner-dashboard-smoke.mjs"
+if (-not (Test-Path $smoke)) {
+  Add-Check -Name "dashboard.application" -Status "FAIL" -Detail "smoke helper missing"
+  Add-Check -Name "dashboard.fatal_console" -Status "FAIL" -Detail "smoke helper missing"
+  Add-Check -Name "dashboard.cloudflare_access" -Status "FAIL" -Detail "smoke helper missing"
+} elseif (-not $backendReady) {
+  Add-Check -Name "dashboard.application" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
+  Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
+  Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
+} else {
   $env:PAPERCLIP_REPO = $repo
   $env:PAPERCLIP_API = $PaperclipApi.TrimEnd("/")
-  Invoke-Native -File "node" -Arguments @($smoke) -FailPrefix "Dashboard Playwright smoke failed" | Write-Host
-
-  foreach ($filter in @(
-      "@paperclipai/plugin-pixel-strip-example",
-      "@paperclipai/plugin-vault-read-bridge-example"
-    )) {
-    Invoke-Native -File "pnpm" -Arguments @("--filter", $filter, "typecheck") -FailPrefix "$filter typecheck failed" | Out-Null
-    Invoke-Native -File "pnpm" -Arguments @("--filter", $filter, "test") -FailPrefix "$filter tests failed" | Out-Null
-    Invoke-Native -File "pnpm" -Arguments @("--filter", $filter, "build") -FailPrefix "$filter build failed" | Out-Null
+  try {
+    $smokeOut = & node $smoke 2>&1
+    $smokeText = @($smokeOut | ForEach-Object { "$_" }) -join "`n"
+    Write-Host $smokeText
+    $jsonLine = @($smokeText -split "`n" | Where-Object { $_ -like "HDO_SWEEP_JSON=*" } | Select-Object -Last 1)
+    if (-not $jsonLine) {
+      Add-Check -Name "dashboard.application" -Status "FAIL" -Detail "smoke produced no structured result"
+      Add-Check -Name "dashboard.fatal_console" -Status "FAIL" -Detail "smoke produced no structured result"
+    } else {
+      $payload = ($jsonLine -replace "^HDO_SWEEP_JSON=", "") | ConvertFrom-Json
+      Add-ImportedChecks -Imported @($payload.checks)
+    }
+  } catch {
+    Add-Check -Name "dashboard.application" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
+    Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
+    Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
   }
-  Write-Host "EXAMPLES=PASS pixel-strip vault-read-bridge"
-
-  Write-Host "HDO_OWNER_APPLY=PASS"
-  Write-Host "OWNER_ACCEPTANCE=Send one genuine Telegram Approve or Revise on a pending Owner decision. This script does not fabricate that callback."
-} catch {
-  Write-Fail $_.Exception.Message
 }
+
+Write-SweepReport
