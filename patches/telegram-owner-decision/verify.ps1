@@ -64,7 +64,7 @@ function Invoke-PaperclipAiJson {
   $code = $LASTEXITCODE
   $text = ($raw | ForEach-Object { "$_" }) -join "`n"
   if ($code -ne 0) {
-    throw "VERIFY_AUTH_API_FAILED: paperclipai $($CliArgs -join ' ') failed (exit $code): $(Redact-SensitiveText $text)"
+    throw ("VERIFY_AUTH_API_FAILED: paperclipai {0} failed (exit {1}): {2}" -f ($CliArgs -join ' '), $code, (Redact-SensitiveText $text))
   }
   $trimmed = $text.Trim()
   if ([string]::IsNullOrWhiteSpace($trimmed)) { return $null }

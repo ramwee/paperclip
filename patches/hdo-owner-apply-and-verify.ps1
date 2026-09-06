@@ -6,7 +6,8 @@ param(
   [string]$ForwardPortBranch = "fix/hdo-windows-dashboard-telegram-forward-port",
   [string]$OwnerFetchRef = "refs/hdo-owner/forward-port",
   [string]$ScheduledTaskName = "HuiDots Paperclip",
-  [int]$ReadyTimeoutSec = 180
+  [int]$ReadyTimeoutSec = 180,
+  [switch]$WindowsHarness
 )
 
 $ErrorActionPreference = "Stop"
@@ -94,7 +95,7 @@ function Invoke-Native {
   $code = $LASTEXITCODE
   $text = @($output | ForEach-Object { "$_" }) -join "`n"
   if ($code -ne 0) {
-    throw "$FailPrefix (exit $code): $text"
+    throw ("{0} (exit {1}): {2}" -f $FailPrefix, $code, $text)
   }
   return $text
 }
@@ -205,39 +206,42 @@ function Clear-ViteOptimizedDeps {
   }
 }
 
+function Get-JsonProperty {
+  param($Object, [string]$Name)
+  if ($null -eq $Object) { return $null }
+  $prop = $Object.PSObject.Properties[$Name]
+  if ($null -eq $prop) { return $null }
+  return $prop.Value
+}
+
 function Assert-Zod4Runtime {
   param([string]$Repo)
-  $script = @'
-const fs = require("node:fs");
-const path = require("node:path");
-const repo = process.argv[1];
-const shared = JSON.parse(fs.readFileSync(path.join(repo, "packages/shared/package.json"), "utf8"));
-if (shared.dependencies?.zod !== "^4.4.3") {
-  console.error("shared zod specifier is " + shared.dependencies?.zod + ", expected ^4.4.3");
-  process.exit(2);
-}
-const candidates = [
-  path.join(repo, "packages/shared/node_modules/zod/package.json"),
-  path.join(repo, "node_modules/zod/package.json"),
-];
-let resolved = null;
-for (const candidate of candidates) {
-  if (fs.existsSync(candidate)) {
-    resolved = JSON.parse(fs.readFileSync(candidate, "utf8"));
-    break;
+  $sharedPath = [IO.Path]::Combine($Repo, "packages", "shared", "package.json")
+  if (-not (Test-Path -LiteralPath $sharedPath)) {
+    throw "shared package.json missing at $sharedPath"
   }
-}
-if (!resolved || !String(resolved.version).startsWith("4.")) {
-  console.error("resolved zod is " + (resolved?.version ?? "missing") + ", expected 4.x");
-  process.exit(3);
-}
-console.log("ZOD_RUNTIME=" + resolved.version);
-'@
-  $result = & node -e $script $Repo
-  if ($LASTEXITCODE -ne 0) {
-    throw "Zod 4 runtime check failed: $result"
+  $shared = Get-Content -LiteralPath $sharedPath -Raw | ConvertFrom-Json
+  $spec = Get-JsonProperty (Get-JsonProperty $shared "dependencies") "zod"
+  if ($spec -ne "^4.4.3") {
+    throw "shared zod specifier is $spec, expected ^4.4.3"
   }
-  return "$result"
+  $candidates = @(
+    [IO.Path]::Combine($Repo, "packages", "shared", "node_modules", "zod", "package.json"),
+    [IO.Path]::Combine($Repo, "node_modules", "zod", "package.json")
+  )
+  $resolved = $null
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate) {
+      $resolved = Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json
+      break
+    }
+  }
+  $version = Get-JsonProperty $resolved "version"
+  if (-not $version -or -not ([string]$version).StartsWith("4.")) {
+    $shown = if ($version) { $version } else { "missing" }
+    throw "resolved zod is $shown, expected 4.x"
+  }
+  return "ZOD_RUNTIME=$version"
 }
 
 function Invoke-OverlayScript {
@@ -247,7 +251,7 @@ function Invoke-OverlayScript {
     [string]$ApiBase,
     [string[]]$ExtraArgs = @()
   )
-  $path = Join-Path $Repo "patches\telegram-owner-decision\$Name"
+  $path = [IO.Path]::Combine($Repo, "patches", "telegram-owner-decision", $Name)
   if (-not (Test-Path $path)) {
     throw "Missing overlay script $path after fast-forward."
   }
@@ -255,7 +259,7 @@ function Invoke-OverlayScript {
   $code = $LASTEXITCODE
   $text = @($overlayOutput | ForEach-Object { "$_" }) -join "`n"
   if ($code -ne 0) {
-    throw "$Name failed with exit $code: $text"
+    throw ("{0} failed with exit {1}: {2}" -f $Name, $code, $text)
   }
   foreach ($line in @($overlayOutput)) {
     $asText = "$line"
@@ -350,6 +354,45 @@ function Restore-LockfileBytes {
   }
 }
 
+function Invoke-WindowsHarness {
+  $repo = $null
+  if (-not [string]::IsNullOrWhiteSpace($PaperclipRepo) -and (Test-Path -LiteralPath $PaperclipRepo)) {
+    $repo = (Resolve-Path $PaperclipRepo).Path
+  } else {
+    $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+  }
+
+  $zod = Assert-Zod4Runtime -Repo $repo
+  if ($zod -notlike "ZOD_RUNTIME=4.*") {
+    throw "Assert-Zod4Runtime harness failed: $zod"
+  }
+  Write-Host "HDO_WINDOWS_HARNESS_ZOD=$zod"
+
+  $scratch = Join-Path ([IO.Path]::GetTempPath()) ("hdo-overlay-harness-" + [guid]::NewGuid().ToString("N"))
+  $overlayDir = [IO.Path]::Combine($scratch, "patches", "telegram-owner-decision")
+  New-Item -ItemType Directory -Path $overlayDir -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $overlayDir "fail.ps1") -Value "exit 7" -Encoding ASCII
+  $threw = $false
+  try {
+    Invoke-OverlayScript -Repo $scratch -Name "fail.ps1" -ApiBase "http://127.0.0.1:3100" | Out-Null
+  } catch {
+    $threw = $true
+    $message = $_.Exception.Message
+    if ($message -notlike "fail.ps1 failed with exit 7*") {
+      throw "Invoke-OverlayScript error format harness failed: $message"
+    }
+    Write-Host "HDO_WINDOWS_HARNESS_OVERLAY=$message"
+  } finally {
+    if (Test-Path -LiteralPath $scratch) {
+      Remove-Item -LiteralPath $scratch -Recurse -Force
+    }
+  }
+  if (-not $threw) {
+    throw "Invoke-OverlayScript harness expected a non-zero exit"
+  }
+  Write-Host "HDO_WINDOWS_HARNESS=PASS"
+}
+
 function Invoke-ExampleSurface {
   param([string]$Filter, [string]$NamePrefix, [string]$ManifestPath)
   $policy = Get-ExamplePolicyStatus -ManifestPath $ManifestPath -Label $Filter
@@ -366,6 +409,16 @@ function Invoke-ExampleSurface {
     } catch {
       Add-Check -Name $checkName -Status "FAIL" -Detail $_.Exception.Message
     }
+  }
+}
+
+if ($WindowsHarness) {
+  try {
+    Invoke-WindowsHarness
+    exit 0
+  } catch {
+    Write-Host ("HDO_WINDOWS_HARNESS=FAIL {0}" -f $_.Exception.Message)
+    exit 1
   }
 }
 
