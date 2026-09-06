@@ -6,6 +6,7 @@ import { match, ok } from "node:assert/strict";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const orchestrator = readFileSync(path.join(dir, "hdo-owner-apply-and-verify.ps1"), "utf8");
+const applyInstalled = readFileSync(path.join(dir, "telegram-owner-decision", "apply-installed.ps1"), "utf8");
 const smoke = readFileSync(path.join(dir, "hdo-owner-dashboard-smoke.mjs"), "utf8");
 const readme = readFileSync(path.join(dir, "telegram-owner-decision", "README.md"), "utf8");
 
@@ -38,8 +39,16 @@ describe("HuiDots owner apply-and-verify contract", () => {
     ok(orchestrator.includes('Stop-Unsafe -Name "repo.ancestry"'));
     ok(orchestrator.includes('Stop-Unsafe -Name "task.huidots_paperclip"'));
     ok(orchestrator.includes('Stop-Unsafe -Name "repo.fast_forward"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "tooling.node_policy"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "deps.lockfile_preserved"'));
     ok(orchestrator.includes('ExpectedBranch = "examples/pixel-strip-and-vault-read-bridge-clean"'));
     ok(orchestrator.includes('BaseSha = "def9c581b48a1fea845bb7b4a8726e201a3ad5d2"'));
+    const nodeStop = orchestrator.indexOf('Stop-Unsafe -Name "tooling.node_policy"');
+    const lockStop = orchestrator.indexOf('Stop-Unsafe -Name "deps.lockfile_preserved"');
+    const ffMerge = orchestrator.indexOf('merge", "--ff-only"');
+    const resolveOnly = orchestrator.indexOf("--no-frozen-lockfile");
+    ok(nodeStop > 0 && nodeStop < ffMerge, "Node <24.11 must stop before fast-forward/source mutation");
+    ok(lockStop > 0 && lockStop < resolveOnly, "lockfile backup failure must stop before dependency mutation");
   });
 
   it("fast-forwards only, with no reset/force/checkout/master merge", () => {
@@ -113,6 +122,35 @@ describe("HuiDots owner apply-and-verify contract", () => {
     ok(restoreCall > resolveCall, "lockfile bytes must be restored after resolution/install");
     ok(finalCheck > restoreCall, "repo.worktree_final must run after lockfile restore");
     ok(!/git(?:\.exe)?\s+checkout\s+--\s+pnpm-lock/i.test(orchestrator));
+    ok(!orchestrator.includes("Read-Host"));
+    ok(!orchestrator.includes("Pause"));
+  });
+
+  it("patches installed overlay first and enables Telegram only after restart/backend-ready", () => {
+    ok(applyInstalled.includes("[switch]$SkipReadiness"));
+    const ensureCall = applyInstalled.indexOf("Ensure-TelegramPluginReady -Repo");
+    const skipGuard = applyInstalled.lastIndexOf("if (-not $SkipReadiness)", ensureCall);
+    ok(ensureCall > 0 && skipGuard >= 0 && skipGuard < ensureCall, "patch-only mode must not call readiness");
+    ok(applyInstalled.includes("TELEGRAM_OWNER_DECISION_READINESS=SKIPPED"));
+
+    const gateFn = orchestrator.indexOf("function Get-RuntimePrerequisiteFailures");
+    const gateFail = orchestrator.indexOf('Add-Check -Name "runtime.mutation_gate" -Status "FAIL"');
+    const untouched = orchestrator.indexOf("Add-UntouchedRuntimeChecks");
+    const skipApply = orchestrator.indexOf('-ExtraArgs @("-SkipReadiness")');
+    const restartCall = orchestrator.indexOf("Restart-HuiDotsTask -TaskName");
+    const waitReady = orchestrator.indexOf("$backendReady = Wait-BackendReady");
+    const enableAfterReady = orchestrator.indexOf(
+      'Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi | Out-Null',
+    );
+    ok(gateFn > 0 && gateFail > gateFn, "prerequisite gate must exist before runtime mutation");
+    ok(untouched > 0 && untouched < skipApply, "prerequisite failure must skip installed-plugin mutation");
+    ok(skipApply > gateFail && skipApply < restartCall, "first apply is patch-only and precedes restart");
+    ok(restartCall > skipApply && waitReady > restartCall, "restart precedes bounded backend ready");
+    ok(enableAfterReady > waitReady, "authenticated readiness occurs only after restart/backend-ready");
+    ok((orchestrator.match(/Restart-HuiDotsTask -TaskName/g) || []).length === 1);
+    ok(orchestrator.includes("live HuiDots instance left untouched"));
+    ok(orchestrator.includes("===== HDO ACCEPTANCE SWEEP ====="));
+    ok(orchestrator.includes("HDO_OWNER_APPLY=$overall"));
     ok(!orchestrator.includes("Read-Host"));
     ok(!orchestrator.includes("Pause"));
   });

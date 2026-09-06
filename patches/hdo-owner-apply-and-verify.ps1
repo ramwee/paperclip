@@ -228,12 +228,17 @@ console.log("ZOD_RUNTIME=" + resolved.version);
 }
 
 function Invoke-OverlayScript {
-  param([string]$Repo, [string]$Name, [string]$ApiBase)
+  param(
+    [string]$Repo,
+    [string]$Name,
+    [string]$ApiBase,
+    [string[]]$ExtraArgs = @()
+  )
   $path = Join-Path $Repo "patches\telegram-owner-decision\$Name"
   if (-not (Test-Path $path)) {
     throw "Missing overlay script $path after fast-forward."
   }
-  $overlayOutput = & $path -PaperclipRepo $Repo -PaperclipApi $ApiBase 2>&1
+  $overlayOutput = & $path -PaperclipRepo $Repo -PaperclipApi $ApiBase @ExtraArgs 2>&1
   $code = $LASTEXITCODE
   $text = @($overlayOutput | ForEach-Object { "$_" }) -join "`n"
   if ($code -ne 0) {
@@ -245,6 +250,47 @@ function Invoke-OverlayScript {
     Write-Host $asText
   }
   return $text
+}
+
+function Get-RuntimePrerequisiteFailures {
+  $required = @(
+    "deps.lockfile_graph",
+    "deps.zod4",
+    "tooling.node_policy",
+    "deps.node_version_policy",
+    "plugin_loader.windows_esm_source",
+    "plugin_loader.windows_esm_tests",
+    "plugin.readiness_auth_path",
+    "examples.pixel_strip.presence_policy",
+    "examples.pixel_strip.typecheck",
+    "examples.pixel_strip.test",
+    "examples.pixel_strip.build",
+    "examples.vault_read_bridge.presence_policy",
+    "examples.vault_read_bridge.typecheck",
+    "examples.vault_read_bridge.test",
+    "examples.vault_read_bridge.build"
+  )
+  return @(
+    $script:Checks |
+      Where-Object { $required -contains $_.Name -and $_.Status -eq "FAIL" } |
+      ForEach-Object { $_.Name }
+  )
+}
+
+function Add-UntouchedRuntimeChecks {
+  param([string]$Detail)
+  foreach ($name in @(
+    "telegram.overlay_apply",
+    "task.restart",
+    "task.backend_ready",
+    "telegram.registry_ready",
+    "telegram.overlay_invariants",
+    "dashboard.application",
+    "dashboard.fatal_console",
+    "dashboard.cloudflare_access"
+  )) {
+    Add-Check -Name $name -Status "NOT-VERIFIABLE-LOCALLY" -Detail $Detail
+  }
 }
 
 function Get-ExamplePolicyStatus {
@@ -371,12 +417,12 @@ try {
 try {
   $node = Get-NodeVersion
   if ($node.Major -lt 24 -or ($node.Major -eq 24 -and $node.Minor -lt 11)) {
-    Add-Check -Name "tooling.node_policy" -Status "FAIL" -Detail "Node $($node.Raw) is below >=24.11.0"
-  } else {
-    Add-Check -Name "tooling.node_policy" -Status "PASS" -Detail $node.Raw
+    Stop-Unsafe -Name "tooling.node_policy" -Detail "Node $($node.Raw) is below >=24.11.0. Fast-forward, install, and runtime mutation are refused."
   }
+  Add-Check -Name "tooling.node_policy" -Status "PASS" -Detail $node.Raw
 } catch {
-  Add-Check -Name "tooling.node_policy" -Status "FAIL" -Detail $_.Exception.Message
+  if ($script:UnsafeStop) { throw }
+  Stop-Unsafe -Name "tooling.node_policy" -Detail $_.Exception.Message
 }
 
 try {
@@ -411,7 +457,7 @@ try {
   $lockBackup = Save-LockfileBytes -Path $lockPath
   Add-Check -Name "deps.lockfile_preserved" -Status "PASS" -Detail "exact pre-resolution pnpm-lock.yaml bytes captured"
 } catch {
-  Add-Check -Name "deps.lockfile_preserved" -Status "FAIL" -Detail $_.Exception.Message
+  Stop-Unsafe -Name "deps.lockfile_preserved" -Detail "Cannot preserve pnpm-lock.yaml before dependency mutation: $($_.Exception.Message)"
 }
 
 try {
@@ -507,84 +553,120 @@ $vaultManifest = Join-Path $repo "packages\plugins\examples\plugin-vault-read-br
 Invoke-ExampleSurface -Filter "@paperclipai/plugin-pixel-strip-example" -NamePrefix "examples.pixel_strip" -ManifestPath $pixelManifest
 Invoke-ExampleSurface -Filter "@paperclipai/plugin-vault-read-bridge-example" -NamePrefix "examples.vault_read_bridge" -ManifestPath $vaultManifest
 
-$overlayApplied = $false
-try {
-  Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi | Out-Null
-  $overlayApplied = $true
-  Add-Check -Name "telegram.overlay_apply" -Status "PASS"
-} catch {
-  Add-Check -Name "telegram.overlay_apply" -Status "FAIL" -Detail $_.Exception.Message
-}
-
-try {
-  Restart-HuiDotsTask -TaskName $ScheduledTaskName
-  Add-Check -Name "task.restart" -Status "PASS" -Detail "End+Run only; no /Change"
-} catch {
-  Add-Check -Name "task.restart" -Status "FAIL" -Detail $_.Exception.Message
-}
-
-$backendReady = Wait-BackendReady -ApiBase $PaperclipApi -TimeoutSec $ReadyTimeoutSec
-if ($backendReady) {
-  Add-Check -Name "task.backend_ready" -Status "PASS" -Detail "/api/health reached after bounded wait"
+$prereqFails = Get-RuntimePrerequisiteFailures
+if ($prereqFails.Count -gt 0) {
+  Add-Check -Name "runtime.mutation_gate" -Status "FAIL" -Detail ("blocked: " + ($prereqFails -join ", "))
+  Add-UntouchedRuntimeChecks -Detail "prerequisite failed; live HuiDots instance left untouched"
 } else {
-  Add-Check -Name "task.backend_ready" -Status "FAIL" -Detail "backend not ready within ${ReadyTimeoutSec}s"
-}
+  Add-Check -Name "runtime.mutation_gate" -Status "PASS" -Detail "source/dependency/focused checks passed"
 
-if ($backendReady) {
+  $overlayApplied = $false
   try {
-    Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi | Out-Null
-    Add-Check -Name "telegram.registry_ready" -Status "PASS" -Detail "authenticated enable/list reported ready"
+    Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi -ExtraArgs @("-SkipReadiness") | Out-Null
+    $overlayApplied = $true
+    Add-Check -Name "telegram.overlay_apply" -Status "PASS" -Detail "installed overlay patched; readiness deferred until after restart"
   } catch {
-    Add-Check -Name "telegram.registry_ready" -Status "FAIL" -Detail $_.Exception.Message
+    Add-Check -Name "telegram.overlay_apply" -Status "FAIL" -Detail $_.Exception.Message
   }
-  try {
-    Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi | Out-Null
-    Add-Check -Name "telegram.overlay_invariants" -Status "PASS"
-  } catch {
-    Add-Check -Name "telegram.overlay_invariants" -Status "FAIL" -Detail $_.Exception.Message
-  }
-} else {
-  Add-Check -Name "telegram.registry_ready" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
-  if ($overlayApplied -and (Test-Path $verifyPath)) {
-    try {
-      Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi | Out-Null
-      Add-Check -Name "telegram.overlay_invariants" -Status "PASS" -Detail "static overlay markers only"
-    } catch {
-      Add-Check -Name "telegram.overlay_invariants" -Status "FAIL" -Detail $_.Exception.Message
-    }
+
+  if (-not $overlayApplied) {
+    Add-Check -Name "task.restart" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "overlay patch failed; live instance left untouched"
+    Add-Check -Name "task.backend_ready" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "overlay patch failed; live instance left untouched"
+    Add-Check -Name "telegram.registry_ready" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "overlay patch failed"
+    Add-Check -Name "telegram.overlay_invariants" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "overlay patch failed"
+    Add-Check -Name "dashboard.application" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "overlay patch failed"
+    Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "overlay patch failed"
+    Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "overlay patch failed"
   } else {
-    Add-Check -Name "telegram.overlay_invariants" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "verify.ps1 not runnable"
-  }
-}
-
-$smoke = Join-Path $repo "patches\hdo-owner-dashboard-smoke.mjs"
-if (-not (Test-Path $smoke)) {
-  Add-Check -Name "dashboard.application" -Status "FAIL" -Detail "smoke helper missing"
-  Add-Check -Name "dashboard.fatal_console" -Status "FAIL" -Detail "smoke helper missing"
-  Add-Check -Name "dashboard.cloudflare_access" -Status "FAIL" -Detail "smoke helper missing"
-} elseif (-not $backendReady) {
-  Add-Check -Name "dashboard.application" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
-  Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
-  Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
-} else {
-  $env:PAPERCLIP_REPO = $repo
-  $env:PAPERCLIP_API = $PaperclipApi.TrimEnd("/")
-  try {
-    $smokeOut = & node $smoke 2>&1
-    $smokeText = @($smokeOut | ForEach-Object { "$_" }) -join "`n"
-    Write-Host $smokeText
-    $jsonLine = @($smokeText -split "`n" | Where-Object { $_ -like "HDO_SWEEP_JSON=*" } | Select-Object -Last 1)
-    if (-not $jsonLine) {
-      Add-Check -Name "dashboard.application" -Status "FAIL" -Detail "smoke produced no structured result"
-      Add-Check -Name "dashboard.fatal_console" -Status "FAIL" -Detail "smoke produced no structured result"
-    } else {
-      $payload = ($jsonLine -replace "^HDO_SWEEP_JSON=", "") | ConvertFrom-Json
-      Add-ImportedChecks -Imported @($payload.checks)
+    $restarted = $false
+    try {
+      Restart-HuiDotsTask -TaskName $ScheduledTaskName
+      $restarted = $true
+      Add-Check -Name "task.restart" -Status "PASS" -Detail "End+Run only; no /Change"
+    } catch {
+      Add-Check -Name "task.restart" -Status "FAIL" -Detail $_.Exception.Message
     }
-  } catch {
-    Add-Check -Name "dashboard.application" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
-    Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
-    Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
+
+    $backendReady = $false
+    if (-not $restarted) {
+      Add-Check -Name "task.backend_ready" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "task restart failed; readiness not run against the pre-restart server"
+      Add-Check -Name "telegram.registry_ready" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "readiness occurs only after restart/backend-ready"
+      if (Test-Path $verifyPath) {
+        try {
+          Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi | Out-Null
+          Add-Check -Name "telegram.overlay_invariants" -Status "PASS" -Detail "static overlay markers only"
+        } catch {
+          Add-Check -Name "telegram.overlay_invariants" -Status "FAIL" -Detail $_.Exception.Message
+        }
+      } else {
+        Add-Check -Name "telegram.overlay_invariants" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "verify.ps1 not runnable"
+      }
+    } else {
+      $backendReady = Wait-BackendReady -ApiBase $PaperclipApi -TimeoutSec $ReadyTimeoutSec
+      if ($backendReady) {
+        Add-Check -Name "task.backend_ready" -Status "PASS" -Detail "/api/health reached after bounded wait"
+      } else {
+        Add-Check -Name "task.backend_ready" -Status "FAIL" -Detail "backend not ready within ${ReadyTimeoutSec}s"
+      }
+    }
+
+    if ($restarted -and $backendReady) {
+      try {
+        Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi | Out-Null
+        Add-Check -Name "telegram.registry_ready" -Status "PASS" -Detail "authenticated enable/list reported ready"
+      } catch {
+        Add-Check -Name "telegram.registry_ready" -Status "FAIL" -Detail $_.Exception.Message
+      }
+      try {
+        Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi | Out-Null
+        Add-Check -Name "telegram.overlay_invariants" -Status "PASS"
+      } catch {
+        Add-Check -Name "telegram.overlay_invariants" -Status "FAIL" -Detail $_.Exception.Message
+      }
+    } elseif ($restarted) {
+      Add-Check -Name "telegram.registry_ready" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready; readiness not run against the pre-restart server"
+      if (Test-Path $verifyPath) {
+        try {
+          Invoke-OverlayScript -Repo $repo -Name "verify.ps1" -ApiBase $PaperclipApi | Out-Null
+          Add-Check -Name "telegram.overlay_invariants" -Status "PASS" -Detail "static overlay markers only"
+        } catch {
+          Add-Check -Name "telegram.overlay_invariants" -Status "FAIL" -Detail $_.Exception.Message
+        }
+      } else {
+        Add-Check -Name "telegram.overlay_invariants" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "verify.ps1 not runnable"
+      }
+    }
+
+    $smoke = Join-Path $repo "patches\hdo-owner-dashboard-smoke.mjs"
+    if (-not (Test-Path $smoke)) {
+      Add-Check -Name "dashboard.application" -Status "FAIL" -Detail "smoke helper missing"
+      Add-Check -Name "dashboard.fatal_console" -Status "FAIL" -Detail "smoke helper missing"
+      Add-Check -Name "dashboard.cloudflare_access" -Status "FAIL" -Detail "smoke helper missing"
+    } elseif (-not $backendReady) {
+      Add-Check -Name "dashboard.application" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
+      Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
+      Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "backend not ready"
+    } else {
+      $env:PAPERCLIP_REPO = $repo
+      $env:PAPERCLIP_API = $PaperclipApi.TrimEnd("/")
+      try {
+        $smokeOut = & node $smoke 2>&1
+        $smokeText = @($smokeOut | ForEach-Object { "$_" }) -join "`n"
+        Write-Host $smokeText
+        $jsonLine = @($smokeText -split "`n" | Where-Object { $_ -like "HDO_SWEEP_JSON=*" } | Select-Object -Last 1)
+        if (-not $jsonLine) {
+          Add-Check -Name "dashboard.application" -Status "FAIL" -Detail "smoke produced no structured result"
+          Add-Check -Name "dashboard.fatal_console" -Status "FAIL" -Detail "smoke produced no structured result"
+        } else {
+          $payload = ($jsonLine -replace "^HDO_SWEEP_JSON=", "") | ConvertFrom-Json
+          Add-ImportedChecks -Imported @($payload.checks)
+        }
+      } catch {
+        Add-Check -Name "dashboard.application" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
+        Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
+        Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
+      }
+    }
   }
 }
 } finally {

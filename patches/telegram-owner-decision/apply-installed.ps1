@@ -2,7 +2,8 @@ param(
   [string]$PaperclipRepo = "C:\Users\admin\Documents\Paperclip",
   [string]$PluginRoot = "C:\Users\admin\.paperclip\plugins\node_modules\paperclip-plugin-telegram",
   [string]$PaperclipApi = "http://127.0.0.1:3100",
-  [string]$PluginKey = "paperclip-plugin-telegram"
+  [string]$PluginKey = "paperclip-plugin-telegram",
+  [switch]$SkipReadiness
 )
 
 $ErrorActionPreference = "Stop"
@@ -400,7 +401,15 @@ function Ensure-TelegramPluginReady {
   Write-Host "TELEGRAM_PLUGIN_READY=READY id=$($pluginAfter.id)"
 }
 
-Ensure-TelegramPluginReady -Repo $PaperclipRepo -ApiBase $PaperclipApi.TrimEnd('/') -Key $PluginKey
+if (-not $SkipReadiness) {
+  Ensure-TelegramPluginReady -Repo $PaperclipRepo -ApiBase $PaperclipApi.TrimEnd('/') -Key $PluginKey
+} else {
+  Write-Host "TELEGRAM_OWNER_DECISION_READINESS=SKIPPED"
+}
 
 Write-Host "TELEGRAM_OWNER_DECISION_PATCH=PASS"
-Write-Host "NEXT_ACTION=Restart only the existing 'HuiDots Paperclip' scheduled task if workers were mid-run, then confirm GET /api/health=200 and plugin status ready."
+if ($SkipReadiness) {
+  Write-Host "NEXT_ACTION=Restart only the existing 'HuiDots Paperclip' scheduled task, wait for backend ready, then re-run apply-installed.ps1 without -SkipReadiness."
+} else {
+  Write-Host "NEXT_ACTION=Restart only the existing 'HuiDots Paperclip' scheduled task if workers were mid-run, then confirm GET /api/health=200 and plugin status ready."
+}

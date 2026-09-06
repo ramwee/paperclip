@@ -10,7 +10,7 @@ After this PR is reviewed, stay on the HuiDots runtime checkout (`examples/pixel
 git fetch origin fix/hdo-windows-dashboard-telegram-forward-port; git show origin/fix/hdo-windows-dashboard-telegram-forward-port:patches/hdo-owner-apply-and-verify.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
 ```
 
-That command fetches the reviewed forward-port branch, then runs `patches/hdo-owner-apply-and-verify.ps1`. The orchestrator keeps you on the current local branch, fast-forwards only when the history is a clean descendant of `def9c581`, reuses `apply-installed.ps1` / `verify.ps1`, and restarts only the existing **HuiDots Paperclip** scheduled task. It runs one affected-surface acceptance sweep and prints a single sectioned `HDO_OWNER_APPLY=PASS` / `FAIL` / `NOT-VERIFIABLE-LOCALLY` report with every failing check name. It stops immediately only when continuing would be unsafe (wrong repo/branch/ancestry, dirty worktree, or missing required task/tooling). A genuine Telegram Approve/Revise remains a separate Owner acceptance action.
+That command fetches the reviewed forward-port branch, then runs `patches/hdo-owner-apply-and-verify.ps1`. The orchestrator keeps you on the current local branch, fast-forwards only when the history is a clean descendant of `def9c581`, reuses `apply-installed.ps1` / `verify.ps1`, and restarts only the existing **HuiDots Paperclip** scheduled task. It runs one affected-surface acceptance sweep and prints a single sectioned `HDO_OWNER_APPLY=PASS` / `FAIL` / `NOT-VERIFIABLE-LOCALLY` report with every failing check name. It stops immediately only when continuing would be unsafe (wrong repo/branch/ancestry, dirty worktree, missing required task/tooling, Node below 24.11, or inability to preserve `pnpm-lock.yaml`). Overlay patching is applied first with `-SkipReadiness`; authenticated Telegram enable runs only after the existing task restart and backend ready. If source/dependency/focused prerequisites fail, the live instance is left untouched. A genuine Telegram Approve/Revise remains a separate Owner acceptance action.
 
 ## Pins
 
@@ -46,7 +46,7 @@ No new decision store, polling loop, supervisor, merge path or deployment mechan
 - `paperclip-core.patch` — the two-line Paperclip event exposure change.
 - `telegram-v0.8.0.patch` — source patch against the pinned Telegram v0.8.0 commit.
 - `owner-decision-actor.ts` / `owner-decision-actor.test.ts` — pure actor-resolution contract + focused tests.
-- `apply-installed.ps1` — idempotent Windows installer for the already-installed v0.8.0 package used by HuiDots (includes readiness enable).
+- `apply-installed.ps1` — idempotent Windows installer for the already-installed v0.8.0 package used by HuiDots. Default includes readiness enable. `-SkipReadiness` patches installed files only.
 - `verify.ps1` — bounded verification of the Paperclip source markers, installed Telegram runtime files, and optional live health/ready checks.
 - `../hdo-owner-apply-and-verify.ps1` — single Owner apply-and-verify orchestrator. Reuses the two scripts above. Invoked by the one bootstrap command.
 
