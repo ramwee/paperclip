@@ -12,12 +12,14 @@ const repo = path.resolve(dir, "..");
 const orchestratorPath = path.join(dir, "hdo-owner-apply-and-verify.ps1");
 const applyPath = path.join(dir, "telegram-owner-decision", "apply-installed.ps1");
 const verifyPath = path.join(dir, "telegram-owner-decision", "verify.ps1");
+const windowsSafePath = path.join(dir, "hdo-owner-apply-windows-safe.ps1");
 const gatePath = path.join(dir, "hdo-windows-powershell-gate.ps1");
 
 const scripts = [
   ["hdo-owner-apply-and-verify.ps1", readFileSync(orchestratorPath, "utf8")],
   ["apply-installed.ps1", readFileSync(applyPath, "utf8")],
   ["verify.ps1", readFileSync(verifyPath, "utf8")],
+  ["hdo-owner-apply-windows-safe.ps1", readFileSync(windowsSafePath, "utf8")],
   ["hdo-windows-powershell-gate.ps1", readFileSync(gatePath, "utf8")],
 ];
 
@@ -91,6 +93,7 @@ describe("Windows PowerShell 5.1 parser and harness gate", () => {
     match(output, /apply-installed\.ps1/);
     match(output, /verify\.ps1/);
     match(output, /hdo-windows-powershell-gate\.ps1/);
+    match(output, /hdo-owner-apply-windows-safe\.ps1/);
     match(output, /HDO_WINDOWS_HARNESS_ZOD=ZOD_RUNTIME=4\./);
     match(output, /HDO_WINDOWS_HARNESS_OVERLAY=fail\.ps1 failed with exit 7/);
     match(output, /HDO_WINDOWS_HARNESS=PASS/);
@@ -109,6 +112,9 @@ describe("Windows PowerShell 5.1 parser and harness gate", () => {
     ok(orchestrator.includes('Stop-Unsafe -Name "tooling.node_policy"'));
     ok(orchestrator.includes('Stop-Unsafe -Name "deps.lockfile_preserved"'));
     ok(orchestrator.includes("runtime.mutation_gate"));
+    ok(orchestrator.includes("dashboard.ui_build"));
+    ok(orchestrator.includes("dashboard.ui_served_sync"));
+    ok(orchestrator.includes("Invoke-ReviewedUiPrepare"));
     ok(orchestrator.includes("-SkipReadiness"));
     ok(!orchestrator.includes("Read-Host"));
     ok(!orchestrator.includes("Pause"));

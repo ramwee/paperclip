@@ -21,6 +21,7 @@ const ownerPs1 = [
   path.join(dir, "hdo-owner-apply-and-verify.ps1"),
   path.join(dir, "telegram-owner-decision", "apply-installed.ps1"),
   path.join(dir, "telegram-owner-decision", "verify.ps1"),
+  path.join(dir, "hdo-owner-apply-windows-safe.ps1"),
   path.join(dir, "hdo-windows-powershell-gate.ps1"),
 ];
 const ownerChanged = [
@@ -40,6 +41,7 @@ const ownerChanged = [
   path.join(repo, "server", "src", "services", "activity-log.ts"),
   path.join(repo, "packages", "plugins", "examples", "plugin-pixel-strip-example", "package.json"),
   path.join(repo, "packages", "plugins", "examples", "plugin-vault-read-bridge-example", "package.json"),
+  path.join(repo, ".gitignore"),
 ];
 
 const bootstrapGit =
@@ -112,6 +114,7 @@ function fixtureFiles() {
     "patches/telegram-owner-decision/apply-installed.ps1": readFileSync(ownerPs1[1], "utf8"),
     "patches/telegram-owner-decision/verify.ps1": readFileSync(ownerPs1[2], "utf8"),
     "patches/hdo-owner-dashboard-smoke.mjs": "console.log('synthetic smoke')\n",
+    ".gitignore": "dist/\nserver/ui-dist/\n",
   };
 }
 
@@ -137,6 +140,16 @@ fi
 if [ -n "$HDO_FAKE_TYPECHECK_FAIL" ] && printf '%s' "$*" | grep -q typecheck; then
   echo typecheck failed >&2
   exit 1
+fi
+if printf '%s' "$*" | grep -q -- '@paperclipai/ui' && printf '%s' "$*" | grep -q -- 'build'; then
+  if [ -n "$HDO_FAKE_UI_BUILD_FAIL" ]; then
+    echo ui build failed >&2
+    exit 1
+  fi
+  mkdir -p ui/dist/assets
+  printf '%s\\n' '<html><script src="/assets/app.js"></script><title>reviewed-ui</title></html>' > ui/dist/index.html
+  printf '%s\\n' 'fresh-asset' > ui/dist/assets/app.js
+  exit 0
 fi
 exit 0
 `,
@@ -232,6 +245,7 @@ describe("Windows-native Owner path acceptance", () => {
     match(parseOut, /hdo-owner-apply-and-verify\.ps1/);
     match(parseOut, /apply-installed\.ps1/);
     match(parseOut, /verify\.ps1/);
+    match(parseOut, /hdo-owner-apply-windows-safe\.ps1/);
     match(parseOut, /hdo-windows-powershell-gate\.ps1/);
     match(parseOut, /HDO_WINDOWS_POWERSHELL_GATE=PASS/);
 
@@ -271,14 +285,26 @@ describe("Windows-native Owner path acceptance", () => {
         originExists = false;
       }
       ok(!originExists, "fixture must start without origin/fix/...");
+      writeTree(local, {
+        "server/ui-dist/index.html": "<html>STALE</html>\n",
+        "server/ui-dist/assets/old.js": "stale-asset\n",
+      });
       const result = runExactBootstrap(local, bin, { HDO_SYNTHETIC_BASE_SHA: baseSha });
       assertSectionedReport(result.out, "PASS");
       match(result.out, /repo\.fast_forward\s+PASS/);
       match(result.out, /deps\.zod4\s+PASS/);
       match(result.out, /deps\.lockfile_preserved\s+PASS/);
       match(result.out, /deps\.lockfile_restored\s+PASS/);
+      match(result.out, /dashboard\.ui_build\s+PASS/);
+      match(result.out, /dashboard\.ui_served_sync\s+PASS/);
       match(result.out, /runtime\.mutation_gate\s+PASS/);
       match(result.out, /repo\.worktree_final\s+PASS/);
+      const served = readFileSync(path.join(local, "server/ui-dist/index.html"), "utf8");
+      const built = readFileSync(path.join(local, "ui/dist/index.html"), "utf8");
+      ok(served === built, "stale server/ui-dist must be replaced by the newly built ui/dist");
+      ok(!served.includes("STALE"), served);
+      ok(existsSync(path.join(local, "server/ui-dist/assets/app.js")));
+      ok(!existsSync(path.join(local, "server/ui-dist/assets/old.js")), "stale served assets must not remain");
       ok(!result.out.includes("synthetic-resolution") || !readFileSync(path.join(local, "pnpm-lock.yaml"), "utf8").includes("synthetic-resolution"));
       ok(!readFileSync(path.join(local, "pnpm-lock.yaml"), "utf8").includes("synthetic-resolution"));
       equalishClean(local);
@@ -307,6 +333,27 @@ describe("Windows-native Owner path acceptance", () => {
       match(gated.out, /live HuiDots instance left untouched/);
       ok(!gated.out.includes("schtasks.exe /End"));
       ok(!gated.out.includes("schtasks.exe /Run"));
+
+      const uiBuildFail = runExactBootstrap(local, bin, {
+        HDO_SYNTHETIC_BASE_SHA: baseSha,
+        HDO_FAKE_UI_BUILD_FAIL: "1",
+      });
+      assertSectionedReport(uiBuildFail.out, "FAIL");
+      match(uiBuildFail.out, /dashboard\.ui_build\s+FAIL/);
+      match(uiBuildFail.out, /dashboard\.ui_served_sync\s+FAIL/);
+      match(uiBuildFail.out, /runtime\.mutation_gate\s+FAIL/);
+      ok(!uiBuildFail.out.includes("schtasks.exe /End"));
+      ok(!uiBuildFail.out.includes("schtasks.exe /Run"));
+
+      const uiSyncFail = runExactBootstrap(local, bin, {
+        HDO_SYNTHETIC_BASE_SHA: baseSha,
+        HDO_FAKE_UI_SYNC_FAIL: "1",
+      });
+      assertSectionedReport(uiSyncFail.out, "FAIL");
+      match(uiSyncFail.out, /dashboard\.ui_served_sync\s+FAIL/);
+      match(uiSyncFail.out, /runtime\.mutation_gate\s+FAIL/);
+      match(uiSyncFail.out, /live HuiDots instance left untouched/);
+      ok(!uiSyncFail.out.includes("schtasks.exe /End"));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

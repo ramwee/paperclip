@@ -236,6 +236,31 @@ describe("HuiDots owner apply-and-verify contract", () => {
     ok(!orchestrator.includes("Pause"));
   });
 
+  it("builds the reviewed UI and syncs server/ui-dist before any live runtime mutation", () => {
+    ok(orchestrator.includes("function Invoke-ReviewedUiPrepare"));
+    ok(orchestrator.includes("function Sync-ServerUiDistFromBuild"));
+    ok(orchestrator.includes("scripts/prepare-server-ui-dist.sh"));
+    ok(orchestrator.includes("dashboard.ui_build"));
+    ok(orchestrator.includes("dashboard.ui_served_sync"));
+    ok(orchestrator.includes("Get-FileHash"));
+    ok(!orchestrator.includes("prepare:ui-dist"));
+    ok(!orchestrator.includes("prepare-server-ui-dist.sh\""));
+    const exampleCall = orchestrator.lastIndexOf("Invoke-ExampleSurface");
+    const uiCall = orchestrator.indexOf("Invoke-ReviewedUiPrepare -Repo");
+    const gateFail = orchestrator.indexOf('Add-Check -Name "runtime.mutation_gate" -Status "FAIL"');
+    const skipApply = orchestrator.indexOf('-ExtraArgs @("-SkipReadiness")');
+    const restartCall = orchestrator.indexOf("Restart-HuiDotsTask -TaskName");
+    const waitReady = orchestrator.indexOf("$backendReady = Wait-BackendReady");
+    const smokeCall = orchestrator.indexOf("& node $smoke");
+    ok(uiCall > exampleCall && uiCall < gateFail, "UI build/sync must follow source/example validation and precede the mutation gate");
+    ok(skipApply > uiCall && restartCall > skipApply, "Telegram patch and task restart must follow served UI sync");
+    ok(smokeCall > waitReady, "browser dashboard acceptance must follow restart/backend ready");
+    ok(orchestrator.includes("function Get-OwnerWorktreePorcelain"));
+    ok(orchestrator.includes("--untracked-files=all"));
+    ok(orchestrator.includes("hdo-owner-dashboard-smoke.mjs"));
+    ok(smoke.includes("guid is not a function"));
+  });
+
   it("verifies Pixel Strip, Vault Read Bridge, and the Pi timeout source without live Codex UAT", () => {
     ok(orchestrator.includes("examples.pixel_strip"));
     ok(orchestrator.includes("examples.vault_read_bridge"));

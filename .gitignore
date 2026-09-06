@@ -5,6 +5,8 @@ node_modules/
 dist/
 dist-preview/
 dist-flow-preview/
+# Served static copy of ui/dist (scripts/prepare-server-ui-dist.sh / Owner apply)
+server/ui-dist/
 packages/paperclip-runner/runner/target/
 ui/storybook-static/
 .env

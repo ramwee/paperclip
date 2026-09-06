@@ -132,6 +132,18 @@ function Get-GitText {
   return (Invoke-Native -File "git" -Arguments (@("-C", $Repo) + $GitArgs) -FailPrefix "git $($GitArgs -join ' ') failed").Trim()
 }
 
+function Get-OwnerWorktreePorcelain {
+  param([string]$Repo)
+  $raw = Get-GitText -Repo $Repo -GitArgs @("status", "--porcelain", "--untracked-files=all")
+  $kept = @(
+    @($raw -split "`r?`n") | Where-Object {
+      -not [string]::IsNullOrWhiteSpace($_) -and
+      ($_ -notmatch '(^|[ /\\])((ui[/\\]dist)|(server[/\\]ui-dist))([/\\]|$)')
+    }
+  )
+  return (@($kept) -join "`n").Trim()
+}
+
 function Test-GitAncestor {
   param([string]$Repo, [string]$Ancestor, [string]$Descendant)
   git -C $Repo merge-base --is-ancestor $Ancestor $Descendant
@@ -291,7 +303,9 @@ function Get-RuntimePrerequisiteFailures {
     "examples.vault_read_bridge.presence_policy",
     "examples.vault_read_bridge.typecheck",
     "examples.vault_read_bridge.test",
-    "examples.vault_read_bridge.build"
+    "examples.vault_read_bridge.build",
+    "dashboard.ui_build",
+    "dashboard.ui_served_sync"
   )
   return @(
     $script:Checks |
@@ -366,6 +380,149 @@ function Restore-LockfileBytes {
     if ($restored[$i] -ne $Bytes[$i]) {
       throw "restored pnpm-lock.yaml bytes differ at offset $i"
     }
+  }
+}
+
+function Get-Sha256Hex {
+  param([string]$Path)
+  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+function Get-UiIndexReferencedAssets {
+  param([string]$IndexPath)
+  $html = [IO.File]::ReadAllText($IndexPath)
+  $found = New-Object System.Collections.Generic.List[string]
+  $pattern = '(?:src|href)\s*=\s*["'']([^"'']+)["'']'
+  foreach ($match in [regex]::Matches($html, $pattern)) {
+    $href = [string]$match.Groups[1].Value
+    if ($href -notlike "*assets/*") { continue }
+    $clean = $href.Split("?")[0].Split("#")[0].TrimStart("/")
+    $rel = $clean.Replace("/", [string][IO.Path]::DirectorySeparatorChar)
+    if (-not [string]::IsNullOrWhiteSpace($rel)) { $found.Add($rel) }
+  }
+  return @($found)
+}
+
+function Copy-DirectoryTree {
+  param([string]$Source, [string]$Destination)
+  if (-not (Test-Path -LiteralPath $Source)) {
+    throw ("UI copy source missing: {0}" -f $Source)
+  }
+  if (-not (Test-Path -LiteralPath $Destination)) {
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+  }
+  Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Destination $_.Name) -Recurse -Force
+  }
+}
+
+function Remove-TreeIfExists {
+  param([string]$Path)
+  if (Test-Path -LiteralPath $Path) {
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-ServedUiMatchesBuild {
+  param([string]$UiDist, [string]$ServedDist)
+  $uiIndex = Join-Path $UiDist "index.html"
+  $servedIndex = Join-Path $ServedDist "index.html"
+  if (-not (Test-Path -LiteralPath $uiIndex)) {
+    throw ("ui/dist/index.html missing at {0}" -f $uiIndex)
+  }
+  if (-not (Test-Path -LiteralPath $servedIndex)) {
+    throw ("server/ui-dist/index.html missing at {0}" -f $servedIndex)
+  }
+  $uiHash = Get-Sha256Hex -Path $uiIndex
+  $servedHash = Get-Sha256Hex -Path $servedIndex
+  if ($uiHash -ne $servedHash) {
+    throw ("served index hash {0} does not match ui/dist {1}; stale server/ui-dist was not replaced" -f $servedHash, $uiHash)
+  }
+  $assets = @(Get-UiIndexReferencedAssets -IndexPath $uiIndex)
+  foreach ($rel in $assets) {
+    $srcAsset = Join-Path $UiDist $rel
+    $dstAsset = Join-Path $ServedDist $rel
+    if (-not (Test-Path -LiteralPath $dstAsset)) {
+      throw ("served asset missing under server/ui-dist: {0}" -f $rel)
+    }
+    if ((Get-Sha256Hex -Path $srcAsset) -ne (Get-Sha256Hex -Path $dstAsset)) {
+      throw ("served asset is stale under server/ui-dist: {0}" -f $rel)
+    }
+  }
+  return ("indexSha256={0} assets={1}" -f $servedHash, @($assets).Count)
+}
+
+function Sync-ServerUiDistFromBuild {
+  param([string]$Repo, [string]$UiDist, [string]$ServedDist)
+  # Bounded PowerShell equivalent of scripts/prepare-server-ui-dist.sh:
+  # copy ui/dist -> server/ui-dist. Stage first, then swap; if the live
+  # HuiDots process has the served directory locked, fall back to in-place
+  # overwrite and still require hash equality.
+  if ($script:Synthetic -and $env:HDO_FAKE_UI_SYNC_FAIL -eq "1") {
+    throw "synthetic served-directory sync failure"
+  }
+  $parent = Split-Path -Parent $ServedDist
+  $staging = Join-Path $parent "ui-dist.next"
+  $previous = Join-Path $parent "ui-dist.prev"
+  Remove-TreeIfExists -Path $staging
+  Remove-TreeIfExists -Path $previous
+  New-Item -ItemType Directory -Path $staging -Force | Out-Null
+  Copy-DirectoryTree -Source $UiDist -Destination $staging
+  $swapped = $false
+  try {
+    if (Test-Path -LiteralPath $ServedDist) {
+      Rename-Item -LiteralPath $ServedDist -NewName "ui-dist.prev"
+    }
+    Rename-Item -LiteralPath $staging -NewName "ui-dist"
+    $swapped = $true
+  } catch {
+    if (Test-Path -LiteralPath $ServedDist) {
+      Get-ChildItem -LiteralPath $ServedDist -Force | ForEach-Object {
+        $peer = Join-Path $UiDist $_.Name
+        if (-not (Test-Path -LiteralPath $peer)) {
+          Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+    Copy-DirectoryTree -Source $UiDist -Destination $ServedDist
+  }
+  if ($swapped) { Remove-TreeIfExists -Path $previous }
+  Remove-TreeIfExists -Path $staging
+  Remove-TreeIfExists -Path $previous
+  return (Assert-ServedUiMatchesBuild -UiDist $UiDist -ServedDist $ServedDist)
+}
+
+function Invoke-ReviewedUiPrepare {
+  param([string]$Repo)
+  # Owner-path equivalent of scripts/prepare-server-ui-dist.sh.
+  # Always rebuild the reviewed UI (do not honor PAPERCLIP_RELEASE_REUSE_UI_DIST).
+  # Board static mode in server/src/app.ts serves server/ui-dist FIRST, then
+  # ui/dist. Telegram overlay patches the installed plugin dist in place.
+  # No other board-UI build-then-copy served path exists on this Owner run.
+  $uiDist = Join-RepoPath -Repo $Repo -Parts @("ui", "dist")
+  $servedDist = Join-RepoPath -Repo $Repo -Parts @("server", "ui-dist")
+  $uiIndex = Join-Path $uiDist "index.html"
+
+  $built = $false
+  try {
+    Invoke-Native -File "pnpm" -Arguments @("--filter", "@paperclipai/ui", "build") -FailPrefix "@paperclipai/ui build failed" | Out-Null
+    if (-not (Test-Path -LiteralPath $uiIndex)) {
+      throw ("UI build output missing at {0}" -f $uiIndex)
+    }
+    Add-Check -Name "dashboard.ui_build" -Status "PASS" -Detail $uiIndex
+    $built = $true
+  } catch {
+    Add-Check -Name "dashboard.ui_build" -Status "FAIL" -Detail $_.Exception.Message
+    Add-Check -Name "dashboard.ui_served_sync" -Status "FAIL" -Detail "ui build did not produce a reviewable dist; live HuiDots instance left untouched"
+    return
+  }
+
+  if (-not $built) { return }
+  try {
+    $detail = Sync-ServerUiDistFromBuild -Repo $Repo -UiDist $uiDist -ServedDist $servedDist
+    Add-Check -Name "dashboard.ui_served_sync" -Status "PASS" -Detail $detail
+  } catch {
+    Add-Check -Name "dashboard.ui_served_sync" -Status "FAIL" -Detail $_.Exception.Message
   }
 }
 
@@ -463,7 +620,7 @@ try {
 }
 
 try {
-  $porcelain = Get-GitText -Repo $repo -GitArgs @("status", "--porcelain")
+  $porcelain = Get-OwnerWorktreePorcelain -Repo $repo
   if (-not [string]::IsNullOrWhiteSpace($porcelain)) {
     Stop-Unsafe -Name "repo.worktree" -Detail "Worktree is not clean. Commit, stash, or restore local changes, then re-run this one command."
   }
@@ -639,6 +796,8 @@ $vaultManifest = Join-RepoPath -Repo $repo -Parts @("packages", "plugins", "exam
 Invoke-ExampleSurface -Filter "@paperclipai/plugin-pixel-strip-example" -NamePrefix "examples.pixel_strip" -ManifestPath $pixelManifest
 Invoke-ExampleSurface -Filter "@paperclipai/plugin-vault-read-bridge-example" -NamePrefix "examples.vault_read_bridge" -ManifestPath $vaultManifest
 
+Invoke-ReviewedUiPrepare -Repo $repo
+
 $prereqFails = @(Get-RuntimePrerequisiteFailures)
 if (@($prereqFails).Count -gt 0) {
   Add-Check -Name "runtime.mutation_gate" -Status "FAIL" -Detail ("blocked: " + ($prereqFails -join ", "))
@@ -772,7 +931,7 @@ if (@($prereqFails).Count -gt 0) {
 }
 
 try {
-  $finalPorcelain = Get-GitText -Repo $repo -GitArgs @("status", "--porcelain")
+  $finalPorcelain = Get-OwnerWorktreePorcelain -Repo $repo
   if ([string]::IsNullOrWhiteSpace($finalPorcelain)) {
     Add-Check -Name "repo.worktree_final" -Status "PASS" -Detail "checkout is clean after scripted source/dependency operations"
   } else {
