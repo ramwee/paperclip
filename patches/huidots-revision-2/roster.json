@@ -1,0 +1,71 @@
+{
+  "revision": 2,
+  "companyNameHints": ["HuiDots", "Huidots", "huidots"],
+  "packagePath": "companies/huidots",
+  "harnessPolicy": {
+    "minimax": { "adapterType": "pi_local", "adapterConfig": { "model": "minimax/MiniMax-M2.5", "thinking": "medium" } },
+    "codex": { "adapterType": "codex_local", "adapterConfig": { "model": "gpt-5.4" } },
+    "cursor": { "adapterType": "cursor", "adapterConfig": { "model": "gpt-5.4" } }
+  },
+  "agents": [
+    { "slug": "ceo", "name": "CEO", "title": "Chief Executive Officer", "role": "ceo", "reportsTo": null, "harness": "minimax", "paused": false, "canCreateAgents": true },
+    { "slug": "coo", "name": "COO", "title": "Chief Operating Officer", "role": "general", "reportsTo": "ceo", "harness": "minimax", "paused": false },
+    { "slug": "cto", "name": "CTO", "title": "Chief Technology Officer", "role": "cto", "reportsTo": "ceo", "harness": "minimax", "paused": false },
+    { "slug": "cro", "name": "CRO", "title": "Chief Revenue Officer", "role": "general", "reportsTo": "ceo", "harness": "minimax", "paused": false },
+    { "slug": "cmo", "name": "CMO", "title": "Chief Marketing Officer", "role": "cmo", "reportsTo": "ceo", "harness": "minimax", "paused": false },
+    { "slug": "cso", "name": "CSO", "title": "Chief Strategy Officer", "role": "general", "reportsTo": "ceo", "harness": "minimax", "paused": false },
+    { "slug": "chro", "name": "CHRO", "title": "Chief Human Resources Officer", "role": "general", "reportsTo": "ceo", "harness": "minimax", "paused": false },
+    { "slug": "web-engineer", "name": "Web Engineer", "title": "Web Engineer", "role": "engineer", "reportsTo": "cto", "harness": "codex", "paused": false },
+    { "slug": "app-engineer", "name": "App Engineer", "title": "App Engineer", "role": "engineer", "reportsTo": "cto", "harness": "codex", "paused": false },
+    { "slug": "ui-ux-designer", "name": "UI/UX Designer", "title": "UI/UX Designer", "role": "designer", "reportsTo": "cto", "harness": "cursor", "paused": false },
+    { "slug": "engineering-reviewer", "name": "Engineering Reviewer", "title": "Engineering Reviewer", "role": "engineer", "reportsTo": "cto", "harness": "minimax", "paused": false },
+    { "slug": "production-director", "name": "Production Director", "title": "Production Director", "role": "general", "reportsTo": "cmo", "harness": "minimax", "paused": false },
+    { "slug": "content-producer", "name": "Content Producer", "title": "Content Producer", "role": "general", "reportsTo": "production-director", "harness": "minimax", "paused": false },
+    { "slug": "video-editor", "name": "Video Editor", "title": "Video Editor", "role": "general", "reportsTo": "production-director", "harness": "minimax", "paused": false },
+    { "slug": "production-qa", "name": "Production QA", "title": "Production QA", "role": "qa", "reportsTo": "production-director", "harness": "minimax", "paused": false },
+    { "slug": "research-director", "name": "Research Director", "title": "Research Director", "role": "researcher", "reportsTo": "cso", "harness": "minimax", "paused": false },
+    { "slug": "business-analyst", "name": "Business Analyst", "title": "Business Analyst", "role": "researcher", "reportsTo": "cso", "harness": "minimax", "paused": false },
+    { "slug": "summarizer", "name": "Summarizer", "title": "Summarizer (Utility)", "role": "general", "reportsTo": "ceo", "harness": "minimax", "paused": true },
+    { "slug": "reflection-coach", "name": "Reflection Coach", "title": "Reflection Coach (Utility)", "role": "general", "reportsTo": "ceo", "harness": "minimax", "paused": true }
+  ],
+  "routines": [
+    {
+      "key": "cso-kiv-opportunity-review",
+      "title": "KIV / Opportunity Review",
+      "assignee": "cso",
+      "cronExpression": "0 9 * * 1",
+      "timezone": "America/Singapore",
+      "description": "Weekly CSO KIV/opportunity review. Walk open KIVs through research → evaluate → BA → recommendation. Escalate material bets to CEO."
+    },
+    {
+      "key": "cmo-media-channel-monitor",
+      "title": "Media / Channel / Account Monitor",
+      "assignee": "cmo",
+      "cronExpression": "0 */6 * * *",
+      "timezone": "America/Singapore",
+      "description": "Monitor multi-brand social/marketplace channels and performance. Never touch Owner personal accounts. Open follow-ups for anomalies."
+    },
+    {
+      "key": "chro-workforce-capacity-review",
+      "title": "AI Workforce / Capacity Review",
+      "assignee": "chro",
+      "cronExpression": "0 10 * * 1",
+      "timezone": "America/Singapore",
+      "description": "Review AI workforce capacity across MiniMax/Codex/Cursor. Keep Summarizer and Reflection Coach paused unless CEO directed otherwise."
+    },
+    {
+      "key": "coo-execution-follow-up",
+      "title": "Cross-company Execution Follow-up",
+      "assignee": "coo",
+      "cronExpression": "0 9 * * 1-5",
+      "timezone": "America/Singapore",
+      "description": "Follow up stalled cross-company execution. Chase through owning executives. Escalate systemic delays to CEO."
+    }
+  ],
+  "taskMigration": {
+    "nonCompletedStatuses": ["backlog", "todo", "in_progress", "in_review", "blocked"],
+    "parkStatus": "backlog",
+    "assigneeSlug": "ceo",
+    "commentPrefix": "HuiDots Revision 2 migration"
+  }
+}
