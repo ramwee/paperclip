@@ -95,6 +95,28 @@ describe("HuiDots owner apply-and-verify contract", () => {
     ok(!smoke.includes("pnpm paperclipai onboard"));
   });
 
+  it("preserves exact pre-resolution lockfile bytes and requires a clean final worktree", () => {
+    ok(orchestrator.includes("function Save-LockfileBytes"));
+    ok(orchestrator.includes("function Restore-LockfileBytes"));
+    ok(orchestrator.includes("[IO.File]::ReadAllBytes"));
+    ok(orchestrator.includes("[IO.File]::WriteAllBytes"));
+    ok(orchestrator.includes("} finally {"));
+    ok(orchestrator.includes("deps.lockfile_preserved"));
+    ok(orchestrator.includes("deps.lockfile_restored"));
+    ok(orchestrator.includes("repo.worktree_final"));
+    ok(orchestrator.includes('"status", "--porcelain"'));
+    const preserveCall = orchestrator.indexOf("$lockBackup = Save-LockfileBytes");
+    const resolveCall = orchestrator.indexOf("--no-frozen-lockfile");
+    const restoreCall = orchestrator.indexOf("Restore-LockfileBytes -Path");
+    const finalCheck = orchestrator.indexOf('Add-Check -Name "repo.worktree_final"');
+    ok(preserveCall > 0 && resolveCall > preserveCall, "lockfile bytes must be captured before resolution-only");
+    ok(restoreCall > resolveCall, "lockfile bytes must be restored after resolution/install");
+    ok(finalCheck > restoreCall, "repo.worktree_final must run after lockfile restore");
+    ok(!/git(?:\.exe)?\s+checkout\s+--\s+pnpm-lock/i.test(orchestrator));
+    ok(!orchestrator.includes("Read-Host"));
+    ok(!orchestrator.includes("Pause"));
+  });
+
   it("verifies Pixel Strip, Vault Read Bridge, and the Pi timeout source without live Codex UAT", () => {
     ok(orchestrator.includes("examples.pixel_strip"));
     ok(orchestrator.includes("examples.vault_read_bridge"));

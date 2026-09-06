@@ -266,6 +266,31 @@ function Get-ExamplePolicyStatus {
   return [pscustomobject]@{ Ok = $true; Detail = "$Label Node policy aligned" }
 }
 
+function Save-LockfileBytes {
+  param([string]$Path)
+  if (-not (Test-Path $Path)) {
+    throw "pnpm-lock.yaml is missing at $Path"
+  }
+  return [IO.File]::ReadAllBytes($Path)
+}
+
+function Restore-LockfileBytes {
+  param([string]$Path, [byte[]]$Bytes)
+  if ($null -eq $Bytes) {
+    throw "no preserved pnpm-lock.yaml bytes to restore"
+  }
+  [IO.File]::WriteAllBytes($Path, $Bytes)
+  $restored = [IO.File]::ReadAllBytes($Path)
+  if ($restored.Length -ne $Bytes.Length) {
+    throw "restored pnpm-lock.yaml length $($restored.Length) does not match preserved $($Bytes.Length)"
+  }
+  for ($i = 0; $i -lt $Bytes.Length; $i++) {
+    if ($restored[$i] -ne $Bytes[$i]) {
+      throw "restored pnpm-lock.yaml bytes differ at offset $i"
+    }
+  }
+}
+
 function Invoke-ExampleSurface {
   param([string]$Filter, [string]$NamePrefix, [string]$ManifestPath)
   $policy = Get-ExamplePolicyStatus -ManifestPath $ManifestPath -Label $Filter
@@ -380,13 +405,23 @@ try {
   Stop-Unsafe -Name "repo.fast_forward" -Detail $_.Exception.Message
 }
 
+$lockPath = Join-Path $repo "pnpm-lock.yaml"
+$lockBackup = $null
 try {
-  Invoke-Native -File "pnpm" -Arguments @("install", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile") -FailPrefix "pnpm lockfile resolution failed" | Out-Null
-  Invoke-Native -File "pnpm" -Arguments @("install", "--frozen-lockfile") -FailPrefix "pnpm install failed" | Out-Null
-  Add-Check -Name "deps.lockfile_graph" -Status "PASS"
+  $lockBackup = Save-LockfileBytes -Path $lockPath
+  Add-Check -Name "deps.lockfile_preserved" -Status "PASS" -Detail "exact pre-resolution pnpm-lock.yaml bytes captured"
 } catch {
-  Add-Check -Name "deps.lockfile_graph" -Status "FAIL" -Detail $_.Exception.Message
+  Add-Check -Name "deps.lockfile_preserved" -Status "FAIL" -Detail $_.Exception.Message
 }
+
+try {
+  try {
+    Invoke-Native -File "pnpm" -Arguments @("install", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile") -FailPrefix "pnpm lockfile resolution failed" | Out-Null
+    Invoke-Native -File "pnpm" -Arguments @("install", "--frozen-lockfile") -FailPrefix "pnpm install failed" | Out-Null
+    Add-Check -Name "deps.lockfile_graph" -Status "PASS"
+  } catch {
+    Add-Check -Name "deps.lockfile_graph" -Status "FAIL" -Detail $_.Exception.Message
+  }
 
 try {
   $zod = Assert-Zod4Runtime -Repo $repo
@@ -551,6 +586,29 @@ if (-not (Test-Path $smoke)) {
     Add-Check -Name "dashboard.fatal_console" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
     Add-Check -Name "dashboard.cloudflare_access" -Status "NOT-VERIFIABLE-LOCALLY" -Detail $_.Exception.Message
   }
+}
+} finally {
+  if ($null -ne $lockBackup) {
+    try {
+      Restore-LockfileBytes -Path $lockPath -Bytes $lockBackup
+      Add-Check -Name "deps.lockfile_restored" -Status "PASS" -Detail "pre-resolution pnpm-lock.yaml bytes restored"
+    } catch {
+      Add-Check -Name "deps.lockfile_restored" -Status "FAIL" -Detail $_.Exception.Message
+    }
+  } else {
+    Add-Check -Name "deps.lockfile_restored" -Status "FAIL" -Detail "no preserved lockfile bytes; cannot restore"
+  }
+}
+
+try {
+  $finalPorcelain = Get-GitText -Repo $repo -GitArgs @("status", "--porcelain")
+  if ([string]::IsNullOrWhiteSpace($finalPorcelain)) {
+    Add-Check -Name "repo.worktree_final" -Status "PASS" -Detail "checkout is clean after scripted source/dependency operations"
+  } else {
+    Add-Check -Name "repo.worktree_final" -Status "FAIL" -Detail $finalPorcelain
+  }
+} catch {
+  Add-Check -Name "repo.worktree_final" -Status "FAIL" -Detail $_.Exception.Message
 }
 
 Write-SweepReport
