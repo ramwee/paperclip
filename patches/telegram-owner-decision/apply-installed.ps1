@@ -273,6 +273,9 @@ node --check $workerPath
 # loadAll() only loads `ready` plugins — producing "no ready plugins to load".
 # Re-enable the already-installed Telegram plugin without recreating config/secrets.
 # Fail closed: this script must not report PASS unless Telegram is ready.
+# Auth: use the supported paperclipai CLI (stored board credential / env), never
+# naked unauthenticated HTTP to /api/plugins (that returns 403 while the server
+# is healthy). Do not print, hard-code, or persist tokens.
 function Get-TelegramPluginRecord {
   param([object[]]$Plugins, [string]$Key)
   return @($Plugins) | Where-Object {
@@ -280,18 +283,81 @@ function Get-TelegramPluginRecord {
   } | Select-Object -First 1
 }
 
+function Redact-SensitiveText([string]$Text) {
+  if ([string]::IsNullOrEmpty($Text)) { return $Text }
+  $redacted = [regex]::Replace($Text, '(?i)Bearer\s+\S+', 'Bearer [redacted]')
+  $redacted = [regex]::Replace($redacted, '(?i)(api[_-]?key|token|authorization)(["'':=\s]+)\S+', '$1$2[redacted]')
+  return $redacted
+}
+
+function Resolve-PaperclipAiInvocation {
+  param([string]$Repo)
+
+  $cmd = Get-Command paperclipai -ErrorAction SilentlyContinue
+  if ($cmd) {
+    return @{ Executable = $cmd.Source; Prefix = @() }
+  }
+
+  $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+  if ($pnpm -and (Test-Path (Join-Path $Repo "package.json"))) {
+    return @{ Executable = $pnpm.Source; Prefix = @("--dir", $Repo, "exec", "--", "paperclipai") }
+  }
+
+  $dist = Join-Path $Repo "cli\dist\index.js"
+  if (Test-Path $dist) {
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) {
+      throw "TELEGRAM_PLUGIN_READY_FAILED: node not found while resolving paperclipai from '$dist'"
+    }
+    return @{ Executable = $node.Source; Prefix = @($dist) }
+  }
+
+  throw "TELEGRAM_PLUGIN_READY_FAILED: paperclipai CLI not found on PATH and cannot be resolved from repo '$Repo'. Build/install the CLI and ensure board access is configured (paperclipai login), then re-run apply-installed.ps1."
+}
+
+function Invoke-PaperclipAiJson {
+  param(
+    [string]$Repo,
+    [string]$ApiBase,
+    [string[]]$CliArgs
+  )
+
+  $inv = Resolve-PaperclipAiInvocation -Repo $Repo
+  # Rely on stored board credential / PAPERCLIP_* env already used by the CLI.
+  # Never pass --api-key here (would risk logging tokens).
+  $fullArgs = @($inv.Prefix) + $CliArgs + @("--api-base", $ApiBase, "--json")
+  $raw = & $inv.Executable @fullArgs 2>&1
+  $code = $LASTEXITCODE
+  $text = ($raw | ForEach-Object { "$_" }) -join "`n"
+  if ($code -ne 0) {
+    throw "TELEGRAM_PLUGIN_READY_FAILED: paperclipai $($CliArgs -join ' ') failed (exit $code): $(Redact-SensitiveText $text)"
+  }
+  $trimmed = $text.Trim()
+  if ([string]::IsNullOrWhiteSpace($trimmed)) { return $null }
+  try {
+    return $trimmed | ConvertFrom-Json
+  } catch {
+    throw "TELEGRAM_PLUGIN_READY_FAILED: paperclipai $($CliArgs -join ' ') returned non-JSON output: $(Redact-SensitiveText $trimmed)"
+  }
+}
+
 function Ensure-TelegramPluginReady {
-  param([string]$ApiBase, [string]$Key)
+  param(
+    [string]$Repo,
+    [string]$ApiBase,
+    [string]$Key
+  )
 
   try {
-    $plugins = Invoke-RestMethod -Uri "$ApiBase/api/plugins" -Method Get -TimeoutSec 15
+    $plugins = Invoke-PaperclipAiJson -Repo $Repo -ApiBase $ApiBase -CliArgs @("plugin", "list")
   } catch {
-    throw "TELEGRAM_PLUGIN_READY_FAILED: cannot query /api/plugins ($($_.Exception.Message)). Start the existing HuiDots Paperclip task, wait for embedded Postgres (~90s), then re-run apply-installed.ps1. Do not recreate company/DB/secrets."
+    if ($_.Exception.Message -like "TELEGRAM_PLUGIN_READY_FAILED:*") { throw }
+    throw "TELEGRAM_PLUGIN_READY_FAILED: authenticated plugin list failed ($($_.Exception.Message)). Start the existing HuiDots Paperclip task, wait for embedded Postgres (~90s), ensure board login (`paperclipai login`), then re-run apply-installed.ps1. Do not recreate company/DB/secrets."
   }
 
   $plugin = Get-TelegramPluginRecord -Plugins @($plugins) -Key $Key
   if (-not $plugin) {
-    throw "TELEGRAM_PLUGIN_READY_FAILED: plugin DB record missing for '$Key' (package may be on disk). Install/enable the existing Telegram plugin via Paperclip UI/API without recreating company/secrets, then re-run apply-installed.ps1."
+    throw "TELEGRAM_PLUGIN_READY_FAILED: plugin DB record missing for '$Key' (package may be on disk). Install/enable the existing Telegram plugin via Paperclip UI/CLI without recreating company/secrets, then re-run apply-installed.ps1."
   }
 
   Write-Host "TELEGRAM_PLUGIN_STATUS=$($plugin.status) id=$($plugin.id)"
@@ -302,12 +368,11 @@ function Ensure-TelegramPluginReady {
 
   try {
     if ($plugin.status -in @("error", "disabled", "upgrade_pending")) {
-      $enabled = Invoke-RestMethod -Uri "$ApiBase/api/plugins/$($plugin.id)/enable" -Method Post -TimeoutSec 60
+      $enabled = Invoke-PaperclipAiJson -Repo $Repo -ApiBase $ApiBase -CliArgs @("plugin", "enable", [string]$plugin.id)
       Write-Host "TELEGRAM_PLUGIN_ENABLE_RESULT status=$($enabled.status)"
     } elseif ($plugin.status -eq "installed") {
-      # Install route reuses lifecycle.load for existing packages; enable rejects installed.
-      $body = @{ packageName = $Key } | ConvertTo-Json
-      $loaded = Invoke-RestMethod -Uri "$ApiBase/api/plugins/install" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 120
+      # Install command reuses lifecycle.load for existing packages; enable rejects installed.
+      $loaded = Invoke-PaperclipAiJson -Repo $Repo -ApiBase $ApiBase -CliArgs @("plugin", "install", $Key)
       Write-Host "TELEGRAM_PLUGIN_LOAD_RESULT status=$($loaded.status)"
     } else {
       throw "TELEGRAM_PLUGIN_READY_FAILED: unhandled plugin status '$($plugin.status)' for id=$($plugin.id)"
@@ -318,9 +383,10 @@ function Ensure-TelegramPluginReady {
   }
 
   try {
-    $pluginsAfter = Invoke-RestMethod -Uri "$ApiBase/api/plugins" -Method Get -TimeoutSec 15
+    $pluginsAfter = Invoke-PaperclipAiJson -Repo $Repo -ApiBase $ApiBase -CliArgs @("plugin", "list")
   } catch {
-    throw "TELEGRAM_PLUGIN_READY_FAILED: enable/load attempted but cannot re-query /api/plugins ($($_.Exception.Message))"
+    if ($_.Exception.Message -like "TELEGRAM_PLUGIN_READY_FAILED:*") { throw }
+    throw "TELEGRAM_PLUGIN_READY_FAILED: enable/load attempted but authenticated re-list failed ($($_.Exception.Message))"
   }
 
   $pluginAfter = Get-TelegramPluginRecord -Plugins @($pluginsAfter) -Key $Key
@@ -334,7 +400,7 @@ function Ensure-TelegramPluginReady {
   Write-Host "TELEGRAM_PLUGIN_READY=READY id=$($pluginAfter.id)"
 }
 
-Ensure-TelegramPluginReady -ApiBase $PaperclipApi.TrimEnd('/') -Key $PluginKey
+Ensure-TelegramPluginReady -Repo $PaperclipRepo -ApiBase $PaperclipApi.TrimEnd('/') -Key $PluginKey
 
 Write-Host "TELEGRAM_OWNER_DECISION_PATCH=PASS"
 Write-Host "NEXT_ACTION=Restart only the existing 'HuiDots Paperclip' scheduled task if workers were mid-run, then confirm GET /api/health=200 and plugin status ready."

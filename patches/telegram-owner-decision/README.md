@@ -27,7 +27,7 @@ No new decision store, polling loop, supervisor, merge path or deployment mechan
 
 ## Plugin readiness note
 
-`plugin-loader: no ready plugins to load` means the plugins table has no rows in `ready` status. Telegram is an npm-installed plugin (not a bundled auto-provision). If a prior activation failure marked it `error`, startup will skip it until `POST /api/plugins/:id/enable` succeeds. `apply-installed.ps1` performs that readiness correction against the existing HuiDots instance without recreating the company, database, secrets, or Telegram configuration. After apply, restart only the existing **HuiDots Paperclip** scheduled task and wait for embedded Postgres (~90s) before health checks.
+`plugin-loader: no ready plugins to load` means the plugins table has no rows in `ready` status. Telegram is an npm-installed plugin (not a bundled auto-provision). If a prior activation failure marked it `error`, startup will skip it until `POST /api/plugins/:id/enable` succeeds. `apply-installed.ps1` performs that readiness correction against the existing HuiDots instance via the authenticated `paperclipai` CLI (stored board credential / env — never naked unauthenticated HTTP, and never printing or persisting tokens), without recreating the company, database, secrets, or Telegram configuration. After apply, restart only the existing **HuiDots Paperclip** scheduled task and wait for embedded Postgres (~90s) before health checks.
 
 ## Files
 
