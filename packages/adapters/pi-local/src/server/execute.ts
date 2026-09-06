@@ -47,6 +47,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
+import { appendPiWindowsShellGuidance, resolvePiToolAllowlist } from "./tools.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
 import { appendPiWindowsShellGuidance, resolvePiToolAllowlist } from "./tools.js";
