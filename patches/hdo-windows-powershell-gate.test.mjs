@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { match, ok } from "node:assert/strict";
+import { findInlineNodeEHazards, findPs51ExpandableScopeErrors } from "./hdo-windows-ps51-scan.mjs";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(dir, "..");
@@ -19,115 +20,6 @@ const scripts = [
   ["verify.ps1", readFileSync(verifyPath, "utf8")],
   ["hdo-windows-powershell-gate.ps1", readFileSync(gatePath, "utf8")],
 ];
-
-function skipLineComment(source, i) {
-  while (i < source.length && source[i] !== "\n") i += 1;
-  return i;
-}
-
-function skipSingleQuoted(source, i) {
-  i += 1;
-  while (i < source.length) {
-    if (source[i] === "'") {
-      if (source[i + 1] === "'") {
-        i += 2;
-        continue;
-      }
-      return i + 1;
-    }
-    i += 1;
-  }
-  return i;
-}
-
-function skipLiteralHereString(source, i) {
-  const nl = source.indexOf("\n", i);
-  if (nl < 0) return source.length;
-  const end = source.indexOf("\n'@", nl);
-  return end < 0 ? source.length : end + 3;
-}
-
-function scanExpandable(source, file, start, end, errors) {
-  let i = start;
-  while (i < end) {
-    if (source[i] === "`") {
-      i += 2;
-      continue;
-    }
-    if (source[i] !== "$") {
-      i += 1;
-      continue;
-    }
-    const next = source[i + 1];
-    if (next === "{" || next === "(") {
-      i += 2;
-      continue;
-    }
-    if (!next || !/[A-Za-z_]/.test(next)) {
-      i += 1;
-      continue;
-    }
-    let j = i + 2;
-    while (j < end && /[A-Za-z0-9_]/.test(source[j])) j += 1;
-    if (source[j] === ":") {
-      const after = source[j + 1];
-      if (!after || !/[A-Za-z_?]/.test(after)) {
-        const snippet = source.slice(i, Math.min(end, j + 6)).replace(/\s+/g, " ");
-        errors.push(`${file}: Windows PowerShell 5.1 rejects scoped expansion ${JSON.stringify(snippet)}`);
-      }
-    }
-    i = j;
-  }
-}
-
-function findPs51ExpandableScopeErrors(source, file) {
-  const errors = [];
-  let i = 0;
-  while (i < source.length) {
-    if (source.startsWith("<#", i)) {
-      const end = source.indexOf("#>", i + 2);
-      i = end < 0 ? source.length : end + 2;
-      continue;
-    }
-    if (source[i] === "#" && (i === 0 || source[i - 1] === "\n" || /\s/.test(source[i - 1]))) {
-      i = skipLineComment(source, i);
-      continue;
-    }
-    if (source.startsWith("@'", i)) {
-      i = skipLiteralHereString(source, i);
-      continue;
-    }
-    if (source.startsWith('@"', i)) {
-      const nl = source.indexOf("\n", i);
-      if (nl < 0) break;
-      const end = source.indexOf('\n"@', nl);
-      const close = end < 0 ? source.length : end;
-      scanExpandable(source, file, nl + 1, close, errors);
-      i = end < 0 ? source.length : end + 3;
-      continue;
-    }
-    if (source[i] === "'") {
-      i = skipSingleQuoted(source, i);
-      continue;
-    }
-    if (source[i] === '"') {
-      let j = i + 1;
-      while (j < source.length) {
-        if (source[j] === "`") {
-          j += 2;
-          continue;
-        }
-        if (source[j] === '"') break;
-        j += 1;
-      }
-      scanExpandable(source, file, i + 1, j, errors);
-      i = j + 1;
-      continue;
-    }
-    i += 1;
-  }
-  return errors;
-}
 
 function commandExists(name) {
   try {
@@ -159,14 +51,28 @@ function resolveWindowsPowerShellHost() {
 }
 
 describe("Windows PowerShell 5.1 parser and harness gate", () => {
+  it("detects the known 5.1 interpolation and node -e hazards", () => {
+    const scoped = findPs51ExpandableScopeErrors('throw "$Name failed with exit $code: $text"', "x.ps1");
+    ok(scoped.length > 0, "must flag $code:");
+    const concat = findPs51ExpandableScopeErrors('$backup = "$Path.ownerdecision.source-control.bak"', "y.ps1");
+    ok(concat.length > 0, "must flag $Path.ownerdecision concatenation");
+    const nodeE = findInlineNodeEHazards('node -e "console.log(1)"', "z.ps1");
+    ok(nodeE.length > 0, "must flag node -e");
+  });
+
   it("rejects expandable $name: constructs the Windows 5.1 parser treats as scoped variables", () => {
     const all = [];
     for (const [file, source] of scripts) {
       all.push(...findPs51ExpandableScopeErrors(source, file));
     }
     ok(all.length === 0, all.join("\n"));
+    const nodeE = scripts.flatMap(([file, source]) => findInlineNodeEHazards(source, file));
+    ok(nodeE.length === 0, nodeE.join("\n"));
     const orchestrator = scripts[0][1];
     ok(!orchestrator.includes("node -e"), "Zod probe must not use node -e");
+    ok(orchestrator.includes("${NamePrefix}.presence_policy"));
+    ok(orchestrator.includes("${NamePrefix}.$scriptName"));
+    ok(scripts[1][1].includes("${Path}.ownerdecision.source-control.bak"));
     ok(orchestrator.includes("function Get-JsonProperty"));
     ok(orchestrator.includes("ConvertFrom-Json"));
     ok(orchestrator.includes("{0} failed with exit {1}: {2}"));
@@ -184,6 +90,7 @@ describe("Windows PowerShell 5.1 parser and harness gate", () => {
     match(output, /hdo-owner-apply-and-verify\.ps1/);
     match(output, /apply-installed\.ps1/);
     match(output, /verify\.ps1/);
+    match(output, /hdo-windows-powershell-gate\.ps1/);
     match(output, /HDO_WINDOWS_HARNESS_ZOD=ZOD_RUNTIME=4\./);
     match(output, /HDO_WINDOWS_HARNESS_OVERLAY=fail\.ps1 failed with exit 7/);
     match(output, /HDO_WINDOWS_HARNESS=PASS/);

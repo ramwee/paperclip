@@ -18,7 +18,7 @@ function Write-Text([string]$Path, [string]$Value) {
 }
 
 function Backup-Once([string]$Path) {
-  $backup = "$Path.ownerdecision.source-control.bak"
+  $backup = "${Path}.ownerdecision.source-control.bak"
   if (-not (Test-Path $backup)) {
     Copy-Item $Path $backup -Force
   }

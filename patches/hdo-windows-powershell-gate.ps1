@@ -34,7 +34,8 @@ $repo = Resolve-GateRepo
 $targets = @(
   [IO.Path]::Combine($repo, "patches", "hdo-owner-apply-and-verify.ps1"),
   [IO.Path]::Combine($repo, "patches", "telegram-owner-decision", "apply-installed.ps1"),
-  [IO.Path]::Combine($repo, "patches", "telegram-owner-decision", "verify.ps1")
+  [IO.Path]::Combine($repo, "patches", "telegram-owner-decision", "verify.ps1"),
+  [IO.Path]::Combine($repo, "patches", "hdo-windows-powershell-gate.ps1")
 )
 
 Write-Host ("HDO_WINDOWS_PS_HOST={0} {1}" -f $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)

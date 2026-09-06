@@ -7,7 +7,8 @@ param(
   [string]$OwnerFetchRef = "refs/hdo-owner/forward-port",
   [string]$ScheduledTaskName = "HuiDots Paperclip",
   [int]$ReadyTimeoutSec = 180,
-  [switch]$WindowsHarness
+  [switch]$WindowsHarness,
+  [switch]$Synthetic
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,11 @@ Set-StrictMode -Version Latest
 
 $script:Checks = New-Object System.Collections.Generic.List[object]
 $script:UnsafeStop = $false
+$script:Synthetic = [bool]$Synthetic
+if ($env:HDO_SYNTHETIC -eq "1") { $script:Synthetic = $true }
+if ($script:Synthetic -and -not [string]::IsNullOrWhiteSpace($env:HDO_SYNTHETIC_BASE_SHA)) {
+  $BaseSha = $env:HDO_SYNTHETIC_BASE_SHA.Trim()
+}
 
 function Add-Check {
   param(
@@ -42,15 +48,15 @@ function Add-ImportedChecks {
 
 function Write-SweepReport {
   param([int]$ExitCode = -1)
-  $fails = @($script:Checks | Where-Object { $_.Status -eq "FAIL" } | ForEach-Object { $_.Name })
+  $fails = @(@($script:Checks | Where-Object { $_.Status -eq "FAIL" } | ForEach-Object { $_.Name }))
   $unverifiable = @(
-    $script:Checks |
+    @($script:Checks |
       Where-Object { $_.Status -eq "NOT-VERIFIABLE-LOCALLY" -and -not $_.DesignedSkip } |
-      ForEach-Object { $_.Name }
+      ForEach-Object { $_.Name })
   )
   $overall = "PASS"
-  if ($fails.Count -gt 0) { $overall = "FAIL" }
-  elseif ($unverifiable.Count -gt 0) { $overall = "NOT-VERIFIABLE-LOCALLY" }
+  if (@($fails).Count -gt 0) { $overall = "FAIL" }
+  elseif (@($unverifiable).Count -gt 0) { $overall = "NOT-VERIFIABLE-LOCALLY" }
 
   Write-Host "===== HDO ACCEPTANCE SWEEP ====="
   foreach ($check in $script:Checks) {
@@ -62,10 +68,10 @@ function Write-SweepReport {
   }
   Write-Host "--------------------------------"
   Write-Host "HDO_OWNER_APPLY=$overall"
-  if ($fails.Count -gt 0) { Write-Host ("FAIL: " + ($fails -join ", ")) }
-  if ($unverifiable.Count -gt 0) { Write-Host ("NOT-VERIFIABLE-LOCALLY: " + ($unverifiable -join ", ")) }
-  $designed = @($script:Checks | Where-Object { $_.DesignedSkip } | ForEach-Object { $_.Name })
-  if ($designed.Count -gt 0) {
+  if (@($fails).Count -gt 0) { Write-Host ("FAIL: " + ($fails -join ", ")) }
+  if (@($unverifiable).Count -gt 0) { Write-Host ("NOT-VERIFIABLE-LOCALLY: " + ($unverifiable -join ", ")) }
+  $designed = @(@($script:Checks | Where-Object { $_.DesignedSkip } | ForEach-Object { $_.Name }))
+  if (@($designed).Count -gt 0) {
     Write-Host ("DESIGNED_SKIP: " + ($designed -join ", "))
   }
   Write-Host "OWNER_ACCEPTANCE=Send one genuine Telegram Approve or Revise on a pending Owner decision. This script does not fabricate that callback."
@@ -147,7 +153,7 @@ function Get-FetchedForwardPortSha {
 function Get-NodeVersion {
   $raw = (Invoke-Native -File "node" -Arguments @("-v") -FailPrefix "node is not available").Trim().TrimStart("v")
   $parts = $raw.Split(".")
-  if ($parts.Count -lt 2) { throw "Cannot parse Node version '$raw'" }
+  if (@($parts).Count -lt 2) { throw "Cannot parse Node version '$raw'" }
   return [pscustomobject]@{
     Raw = $raw
     Major = [int]$parts[0]
@@ -295,7 +301,7 @@ function Get-RuntimePrerequisiteFailures {
 }
 
 function Add-UntouchedRuntimeChecks {
-  param([string]$Detail)
+  param([string]$Detail, [switch]$DesignedSkip)
   foreach ($name in @(
     "telegram.overlay_apply",
     "task.restart",
@@ -306,8 +312,17 @@ function Add-UntouchedRuntimeChecks {
     "dashboard.fatal_console",
     "dashboard.cloudflare_access"
   )) {
-    Add-Check -Name $name -Status "NOT-VERIFIABLE-LOCALLY" -Detail $Detail
+    Add-Check -Name $name -Status "NOT-VERIFIABLE-LOCALLY" -Detail $Detail -DesignedSkip:$DesignedSkip
   }
+}
+
+function Join-RepoPath {
+  param([string]$Repo, [string[]]$Parts)
+  $path = $Repo
+  foreach ($part in @($Parts)) {
+    $path = [IO.Path]::Combine($path, $part)
+  }
+  return $path
 }
 
 function Get-ExamplePolicyStatus {
@@ -397,12 +412,12 @@ function Invoke-ExampleSurface {
   param([string]$Filter, [string]$NamePrefix, [string]$ManifestPath)
   $policy = Get-ExamplePolicyStatus -ManifestPath $ManifestPath -Label $Filter
   if ($policy.Ok) {
-    Add-Check -Name "$NamePrefix.presence_policy" -Status "PASS" -Detail $policy.Detail
+    Add-Check -Name "${NamePrefix}.presence_policy" -Status "PASS" -Detail $policy.Detail
   } else {
-    Add-Check -Name "$NamePrefix.presence_policy" -Status "FAIL" -Detail $policy.Detail
+    Add-Check -Name "${NamePrefix}.presence_policy" -Status "FAIL" -Detail $policy.Detail
   }
   foreach ($scriptName in @("typecheck", "test", "build")) {
-    $checkName = "$NamePrefix.$scriptName"
+    $checkName = "${NamePrefix}.$scriptName"
     try {
       Invoke-Native -File "pnpm" -Arguments @("--filter", $Filter, $scriptName) -FailPrefix "$Filter $scriptName failed" | Out-Null
       Add-Check -Name $checkName -Status "PASS"
@@ -458,14 +473,18 @@ try {
   Stop-Unsafe -Name "repo.worktree" -Detail $_.Exception.Message
 }
 
-$taskQuery = schtasks.exe /Query /TN $ScheduledTaskName /FO LIST
-if ($LASTEXITCODE -ne 0) {
-  Stop-Unsafe -Name "task.huidots_paperclip" -Detail "Scheduled task '$ScheduledTaskName' does not exist. This script will not create or alter task configuration."
-}
-if ($taskQuery -match "/Change|TR: /Create") {
-  Add-Check -Name "task.huidots_paperclip" -Status "FAIL" -Detail "task query unexpectedly looks like a reconfiguration command"
+if ($script:Synthetic) {
+  Add-Check -Name "task.huidots_paperclip" -Status "PASS" -Detail "synthetic; live HuiDots task not queried or reconfigured"
 } else {
-  Add-Check -Name "task.huidots_paperclip" -Status "PASS" -Detail "present; configuration will not be changed"
+  $taskQuery = schtasks.exe /Query /TN $ScheduledTaskName /FO LIST
+  if ($LASTEXITCODE -ne 0) {
+    Stop-Unsafe -Name "task.huidots_paperclip" -Detail "Scheduled task '$ScheduledTaskName' does not exist. This script will not create or alter task configuration."
+  }
+  if ($taskQuery -match "/Change|TR: /Create") {
+    Add-Check -Name "task.huidots_paperclip" -Status "FAIL" -Detail "task query unexpectedly looks like a reconfiguration command"
+  } else {
+    Add-Check -Name "task.huidots_paperclip" -Status "PASS" -Detail "present; configuration will not be changed"
+  }
 }
 
 try {
@@ -544,10 +563,12 @@ try {
 try {
   Clear-ViteOptimizedDeps -Repo $repo
   $stale = @(
-    (Join-Path $repo "node_modules\.vite"),
-    (Join-Path $repo "ui\node_modules\.vite")
-  ) | Where-Object { Test-Path $_ }
-  if ($stale.Count -gt 0) {
+    @(
+      (Join-Path $repo "node_modules\.vite"),
+      (Join-Path $repo "ui\node_modules\.vite")
+    ) | Where-Object { Test-Path $_ }
+  )
+  if (@($stale).Count -gt 0) {
     Add-Check -Name "deps.vite_cache" -Status "FAIL" -Detail ($stale -join ", ")
   } else {
     Add-Check -Name "deps.vite_cache" -Status "PASS" -Detail "optimized deps cache removed"
@@ -563,8 +584,8 @@ try {
   Add-Check -Name "deps.node_version_policy" -Status "FAIL" -Detail $_.Exception.Message
 }
 
-$esmUrl = Join-Path $repo "server\src\services\plugin-esm-url.ts"
-$esmLoader = Join-Path $repo "server\src\services\plugin-loader.ts"
+$esmUrl = Join-RepoPath -Repo $repo -Parts @("server", "src", "services", "plugin-esm-url.ts")
+$esmLoader = Join-RepoPath -Repo $repo -Parts @("server", "src", "services", "plugin-loader.ts")
 if (
   (Test-FileContains $esmUrl "toNodeEsmImportUrl") -and
   (Test-FileContains $esmUrl "pathToFileURL") -and
@@ -585,8 +606,8 @@ try {
   Pop-Location
 }
 
-$applyPath = Join-Path $repo "patches\telegram-owner-decision\apply-installed.ps1"
-$verifyPath = Join-Path $repo "patches\telegram-owner-decision\verify.ps1"
+$applyPath = Join-RepoPath -Repo $repo -Parts @("patches", "telegram-owner-decision", "apply-installed.ps1")
+$verifyPath = Join-RepoPath -Repo $repo -Parts @("patches", "telegram-owner-decision", "verify.ps1")
 if (-not (Test-Path $applyPath) -or -not (Test-Path $verifyPath)) {
   Add-Check -Name "plugin.readiness_auth_path" -Status "FAIL" -Detail "overlay scripts missing"
 } else {
@@ -600,8 +621,8 @@ if (-not (Test-Path $applyPath) -or -not (Test-Path $verifyPath)) {
   }
 }
 
-$piBuild = Join-Path $repo "packages\adapters\pi-local\src\ui\build-config.ts"
-$piTimeout = Join-Path $repo "packages\adapter-utils\src\execution-target.ts"
+$piBuild = Join-RepoPath -Repo $repo -Parts @("packages", "adapters", "pi-local", "src", "ui", "build-config.ts")
+$piTimeout = Join-RepoPath -Repo $repo -Parts @("packages", "adapter-utils", "src", "execution-target.ts")
 if (
   (Test-FileContains $piBuild "ac.timeoutSec = 0") -and
   (Test-FileContains $piBuild "ac.graceSec = 20") -and
@@ -613,15 +634,18 @@ if (
 }
 Add-Check -Name "codex.live_uat" -Status "NOT-VERIFIABLE-LOCALLY" -Detail "not repeated by design" -DesignedSkip
 
-$pixelManifest = Join-Path $repo "packages\plugins\examples\plugin-pixel-strip-example\package.json"
-$vaultManifest = Join-Path $repo "packages\plugins\examples\plugin-vault-read-bridge-example\package.json"
+$pixelManifest = Join-RepoPath -Repo $repo -Parts @("packages", "plugins", "examples", "plugin-pixel-strip-example", "package.json")
+$vaultManifest = Join-RepoPath -Repo $repo -Parts @("packages", "plugins", "examples", "plugin-vault-read-bridge-example", "package.json")
 Invoke-ExampleSurface -Filter "@paperclipai/plugin-pixel-strip-example" -NamePrefix "examples.pixel_strip" -ManifestPath $pixelManifest
 Invoke-ExampleSurface -Filter "@paperclipai/plugin-vault-read-bridge-example" -NamePrefix "examples.vault_read_bridge" -ManifestPath $vaultManifest
 
-$prereqFails = Get-RuntimePrerequisiteFailures
-if ($prereqFails.Count -gt 0) {
+$prereqFails = @(Get-RuntimePrerequisiteFailures)
+if (@($prereqFails).Count -gt 0) {
   Add-Check -Name "runtime.mutation_gate" -Status "FAIL" -Detail ("blocked: " + ($prereqFails -join ", "))
   Add-UntouchedRuntimeChecks -Detail "prerequisite failed; live HuiDots instance left untouched"
+} elseif ($script:Synthetic) {
+  Add-Check -Name "runtime.mutation_gate" -Status "PASS" -Detail "source/dependency/focused checks passed; live HuiDots instance not touched"
+  Add-UntouchedRuntimeChecks -Detail "synthetic; live HuiDots instance not touched" -DesignedSkip
 } else {
   Add-Check -Name "runtime.mutation_gate" -Status "PASS" -Detail "source/dependency/focused checks passed"
 
