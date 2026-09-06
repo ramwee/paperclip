@@ -14,7 +14,7 @@ diff --git a/src/worker.ts b/src/worker.ts
 --- a/src/worker.ts
 +++ b/src/worker.ts
 @@ -139,7 +139,10 @@
- 
+
  type TelegramBoardAccessState = {
    paperclipBoardApiTokenRef: string | null;
 +  /** Display label only (displayName/name/login/email). Never use as actorUserId. */
@@ -33,7 +33,7 @@ diff --git a/src/worker.ts b/src/worker.ts
      updatedAt: asNonEmptyString(record.updatedAt),
    };
  }
- 
+
 +async function resolveOwnerDecisionActorUserId(
 +  ctx: PluginContext,
 +  boardAccess: TelegramBoardAccessState,
@@ -89,7 +89,7 @@ diff --git a/src/worker.ts b/src/worker.ts
 +      const actorUserId = asNonEmptyString(record.actorUserId);
        const companyId = asNonEmptyString(record.companyId);
        const now = new Date().toISOString();
- 
+
        return persistBoardAccessState(ctx, {
          paperclipBoardApiTokenRef,
          identity,
@@ -100,7 +100,7 @@ diff --git a/src/worker.ts b/src/worker.ts
 @@ -911,6 +962,60 @@
        await notify(ctx, rt, event, formatIssueAssigned);
      });
- 
+
 +    ctx.events.on("issue.thread_interaction.created", async (event: PluginEvent) => {
 +      const rt = ensureRuntime();
 +      if (!rt) return;
@@ -161,7 +161,7 @@ diff --git a/src/worker.ts b/src/worker.ts
 @@ -1567,6 +1672,75 @@
    const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
    const messageId = query.message?.message_id;
- 
+
 +  if (data.startsWith("decision_accept_") || data.startsWith("decision_revise_")) {
 +    const accept = data.startsWith("decision_accept_");
 +    const interactionId = data.replace(accept ? "decision_accept_" : "decision_revise_", "");
