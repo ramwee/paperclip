@@ -39,6 +39,8 @@ import type {
   PluginRecord,
   PluginUiSlotDeclaration,
 } from "@paperclipai/shared";
+import { toNodeEsmImportUrl } from "./plugin-esm-url.js";
+export { toNodeEsmImportUrl } from "./plugin-esm-url.js";
 import { logger } from "../middleware/logger.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
@@ -2326,8 +2328,10 @@ export function pluginLoader(
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
+      // `--import` must receive a file:// URL on Windows (bare `C:\...` paths
+      // throw ERR_UNSUPPORTED_ESM_URL_SCHEME).
       if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        workerOptions.execArgv = ["--import", toNodeEsmImportUrl(DEV_TSX_LOADER_PATH)];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);

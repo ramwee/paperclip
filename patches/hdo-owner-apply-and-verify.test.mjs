@@ -1,0 +1,276 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, it } from "node:test";
+import { equal, match, ok } from "node:assert/strict";
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const orchestrator = readFileSync(path.join(dir, "hdo-owner-apply-and-verify.ps1"), "utf8");
+const applyInstalled = readFileSync(path.join(dir, "telegram-owner-decision", "apply-installed.ps1"), "utf8");
+const smoke = readFileSync(path.join(dir, "hdo-owner-dashboard-smoke.mjs"), "utf8");
+const readme = readFileSync(path.join(dir, "telegram-owner-decision", "README.md"), "utf8");
+
+describe("HuiDots owner apply-and-verify contract", () => {
+  it("documents one bootstrap command that fetches the PR without a branch switch", () => {
+    match(
+      readme,
+      /git fetch origin fix\/hdo-windows-dashboard-telegram-forward-port:refs\/hdo-owner\/forward-port; git show refs\/hdo-owner\/forward-port:patches\/hdo-owner-apply-and-verify\.ps1 \| powershell -NoProfile -ExecutionPolicy Bypass -Command -/,
+    );
+    ok(!readme.includes("git show origin/"), "bootstrap must not dereference origin/<branch>");
+    ok(!readme.includes("git checkout"), "bootstrap must not ask the Owner to check out a branch");
+    ok(!readme.includes("git switch"), "bootstrap must not ask the Owner to switch branches");
+  });
+
+  it("collects a sectioned PASS/FAIL/NOT-VERIFIABLE-LOCALLY sweep instead of aborting after the first safe check", () => {
+    ok(orchestrator.includes("===== HDO ACCEPTANCE SWEEP ====="));
+    ok(orchestrator.includes("HDO_OWNER_APPLY=$overall"));
+    ok(orchestrator.includes("NOT-VERIFIABLE-LOCALLY"));
+    ok(orchestrator.includes("function Add-Check"));
+    ok(orchestrator.includes("function Stop-Unsafe"));
+    ok(orchestrator.includes("FAIL: "));
+    ok(orchestrator.includes("does not fabricate"));
+    ok(!orchestrator.includes("Read-Host"));
+    ok(!orchestrator.includes("Pause"));
+  });
+
+  it("hard-stops only for unsafe repo/branch/worktree/task/tooling conditions", () => {
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.identity"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.branch"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.worktree"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.ancestry"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "task.huidots_paperclip"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "repo.fast_forward"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "tooling.node_policy"'));
+    ok(orchestrator.includes('Stop-Unsafe -Name "deps.lockfile_preserved"'));
+    ok(orchestrator.includes('ExpectedBranch = "examples/pixel-strip-and-vault-read-bridge-clean"'));
+    ok(orchestrator.includes('BaseSha = "def9c581b48a1fea845bb7b4a8726e201a3ad5d2"'));
+    const nodeStop = orchestrator.indexOf('Stop-Unsafe -Name "tooling.node_policy"');
+    const lockStop = orchestrator.indexOf('Stop-Unsafe -Name "deps.lockfile_preserved"');
+    const ffMerge = orchestrator.indexOf('merge", "--ff-only"');
+    const resolveOnly = orchestrator.indexOf("--no-frozen-lockfile");
+    ok(nodeStop > 0 && nodeStop < ffMerge, "Node <24.11 must stop before fast-forward/source mutation");
+    ok(lockStop > 0 && lockStop < resolveOnly, "lockfile backup failure must stop before dependency mutation");
+  });
+
+  it("fast-forwards only, with no reset/force/checkout/master merge", () => {
+    ok(orchestrator.includes('merge", "--ff-only"') || orchestrator.includes("merge --ff-only"));
+    ok(orchestrator.includes("function Get-FetchedForwardPortSha"));
+    ok(orchestrator.includes("${Branch}:${FetchRef}"));
+    ok(orchestrator.includes("refs/hdo-owner/forward-port"));
+    ok(orchestrator.includes("$fetchedSha"));
+    ok(!orchestrator.includes("origin/$ForwardPortBranch"));
+    ok(!orchestrator.includes('rev-parse", "origin/'));
+    ok(!orchestrator.includes("rev-parse origin/"));
+    ok(orchestrator.includes("fetch"));
+    ok(!/git(?:\.exe)?\s+reset/i.test(orchestrator));
+    ok(!/git(?:\.exe)?\s+checkout/i.test(orchestrator));
+    ok(!/git(?:\.exe)?\s+switch/i.test(orchestrator));
+    ok(!/--force\b/.test(orchestrator));
+    ok(!/-B\b/.test(orchestrator));
+    ok(!/merge.*master/.test(orchestrator));
+    ok(!/merge.*main/.test(orchestrator));
+  });
+
+  it("can fetch and show the orchestrator when origin/<branch> does not exist", () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "hdo-owner-fetch-"));
+    const git = (cwd, args) =>
+      execFileSync("git", ["-c", "user.name=hdo-test", "-c", "user.email=hdo@test", ...args], {
+        cwd,
+        encoding: "utf8",
+      }).trim();
+    try {
+      const remote = path.join(tmp, "remote.git");
+      const local = path.join(tmp, "local");
+      git(tmp, ["init", "--bare", remote]);
+      const seed = path.join(tmp, "seed");
+      git(tmp, ["init", "-b", "examples/pixel-strip-and-vault-read-bridge-clean", seed]);
+      writeFileSync(path.join(seed, "README"), "runtime\n");
+      git(seed, ["add", "README"]);
+      git(seed, ["commit", "-m", "runtime base"]);
+      git(seed, ["remote", "add", "origin", remote]);
+      git(seed, ["push", "-u", "origin", "HEAD"]);
+      git(seed, ["checkout", "-b", "fix/hdo-windows-dashboard-telegram-forward-port"]);
+      mkdirSync(path.join(seed, "patches"), { recursive: true });
+      writeFileSync(path.join(seed, "patches", "hdo-owner-apply-and-verify.ps1"), "Write-Host fetched-orchestrator\n");
+      git(seed, ["add", "patches/hdo-owner-apply-and-verify.ps1"]);
+      git(seed, ["commit", "-m", "forward-port"]);
+      git(seed, ["push", "origin", "HEAD"]);
+
+      git(tmp, [
+        "clone",
+        "--single-branch",
+        "--branch",
+        "examples/pixel-strip-and-vault-read-bridge-clean",
+        remote,
+        local,
+      ]);
+      git(local, [
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/examples/pixel-strip-and-vault-read-bridge-clean:refs/remotes/origin/examples/pixel-strip-and-vault-read-bridge-clean",
+      ]);
+
+      let originBranchExists = true;
+      try {
+        git(local, ["rev-parse", "--verify", "origin/fix/hdo-windows-dashboard-telegram-forward-port"]);
+      } catch {
+        originBranchExists = false;
+      }
+      ok(!originBranchExists, "fixture must start without origin/fix/... remote-tracking ref");
+
+      git(local, [
+        "fetch",
+        "origin",
+        "fix/hdo-windows-dashboard-telegram-forward-port:refs/hdo-owner/forward-port",
+      ]);
+      const fetched = git(local, ["rev-parse", "--verify", "refs/hdo-owner/forward-port^{commit}"]);
+      match(fetched, /^[0-9a-f]{40}$/);
+      const shown = git(local, ["show", "refs/hdo-owner/forward-port:patches/hdo-owner-apply-and-verify.ps1"]);
+      match(shown, /fetched-orchestrator/);
+      const current = git(local, ["branch", "--show-current"]);
+      equal(current, "examples/pixel-strip-and-vault-read-bridge-clean");
+
+      let stillMissingOriginBranch = false;
+      try {
+        git(local, ["rev-parse", "--verify", "origin/fix/hdo-windows-dashboard-telegram-forward-port"]);
+      } catch {
+        stillMissingOriginBranch = true;
+      }
+      ok(stillMissingOriginBranch, "dedicated refspec must not require origin/<branch>");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("covers Node/pnpm policy, Zod 4, Vite cache, and Windows ESM file:// behavior", () => {
+    ok(orchestrator.includes("check:node-version"));
+    ok(orchestrator.includes("Assert-Zod4Runtime"));
+    ok(orchestrator.includes("Clear-ViteOptimizedDeps"));
+    ok(orchestrator.includes("plugin_loader.windows_esm_source"));
+    ok(orchestrator.includes("plugin_loader.windows_esm_tests"));
+    ok(orchestrator.includes("plugin-loader-windows-esm.test.ts"));
+    ok(orchestrator.includes("toNodeEsmImportUrl"));
+  });
+
+  it("reuses Telegram overlay scripts and forbids unauthenticated /api/plugins", () => {
+    ok(orchestrator.includes("apply-installed.ps1"));
+    ok(orchestrator.includes("verify.ps1"));
+    ok(orchestrator.includes("plugin.readiness_auth_path"));
+    ok(orchestrator.includes("Invoke-RestMethod"));
+    ok(orchestrator.includes("/api/plugins"));
+    ok(!/PAPERCLIP_API_KEY/.test(orchestrator));
+    ok(!/Bearer /.test(orchestrator));
+  });
+
+  it("restarts only the existing HuiDots task and waits for backend readiness", () => {
+    ok(orchestrator.includes("schtasks.exe /End /TN"));
+    ok(orchestrator.includes("schtasks.exe /Run /TN"));
+    ok(!orchestrator.includes("schtasks.exe /Change"));
+    ok(!orchestrator.includes("Register-ScheduledTask"));
+    ok(!orchestrator.includes("New-ScheduledTask"));
+    ok(orchestrator.includes("Wait-BackendReady"));
+    ok(orchestrator.includes("/api/health"));
+  });
+
+  it("distinguishes Cloudflare Access/login 200 from dashboard application acceptance", () => {
+    ok(smoke.includes("cloudflareAccessPattern"));
+    ok(smoke.includes("dashboard.cloudflare_access"));
+    ok(smoke.includes("dashboard.application"));
+    ok(smoke.includes("dashboard.fatal_console"));
+    ok(smoke.includes("guid is not a function"));
+    ok(smoke.includes("HTTP status alone is never treated as app health") || smoke.includes("HTTP 200 is not app health"));
+    ok(!smoke.includes("reuseExistingServer"));
+    ok(!smoke.includes("pnpm paperclipai onboard"));
+  });
+
+  it("preserves exact pre-resolution lockfile bytes and requires a clean final worktree", () => {
+    ok(orchestrator.includes("function Save-LockfileBytes"));
+    ok(orchestrator.includes("function Restore-LockfileBytes"));
+    ok(orchestrator.includes("[IO.File]::ReadAllBytes"));
+    ok(orchestrator.includes("[IO.File]::WriteAllBytes"));
+    ok(orchestrator.includes("} finally {"));
+    ok(orchestrator.includes("deps.lockfile_preserved"));
+    ok(orchestrator.includes("deps.lockfile_restored"));
+    ok(orchestrator.includes("repo.worktree_final"));
+    ok(orchestrator.includes('"status", "--porcelain"'));
+    const preserveCall = orchestrator.indexOf("$lockBackup = Save-LockfileBytes");
+    const resolveCall = orchestrator.indexOf("--no-frozen-lockfile");
+    const restoreCall = orchestrator.indexOf("Restore-LockfileBytes -Path");
+    const finalCheck = orchestrator.indexOf('Add-Check -Name "repo.worktree_final"');
+    ok(preserveCall > 0 && resolveCall > preserveCall, "lockfile bytes must be captured before resolution-only");
+    ok(restoreCall > resolveCall, "lockfile bytes must be restored after resolution/install");
+    ok(finalCheck > restoreCall, "repo.worktree_final must run after lockfile restore");
+    ok(!/git(?:\.exe)?\s+checkout\s+--\s+pnpm-lock/i.test(orchestrator));
+    ok(!orchestrator.includes("Read-Host"));
+    ok(!orchestrator.includes("Pause"));
+  });
+
+  it("patches installed overlay first and enables Telegram only after restart/backend-ready", () => {
+    ok(applyInstalled.includes("[switch]$SkipReadiness"));
+    const ensureCall = applyInstalled.indexOf("Ensure-TelegramPluginReady -Repo");
+    const skipGuard = applyInstalled.lastIndexOf("if (-not $SkipReadiness)", ensureCall);
+    ok(ensureCall > 0 && skipGuard >= 0 && skipGuard < ensureCall, "patch-only mode must not call readiness");
+    ok(applyInstalled.includes("TELEGRAM_OWNER_DECISION_READINESS=SKIPPED"));
+
+    const gateFn = orchestrator.indexOf("function Get-RuntimePrerequisiteFailures");
+    const gateFail = orchestrator.indexOf('Add-Check -Name "runtime.mutation_gate" -Status "FAIL"');
+    const untouched = orchestrator.indexOf("Add-UntouchedRuntimeChecks");
+    const skipApply = orchestrator.indexOf('-ExtraArgs @("-SkipReadiness")');
+    const restartCall = orchestrator.indexOf("Restart-HuiDotsTask -TaskName");
+    const waitReady = orchestrator.indexOf("$backendReady = Wait-BackendReady");
+    const enableAfterReady = orchestrator.indexOf(
+      'Invoke-OverlayScript -Repo $repo -Name "apply-installed.ps1" -ApiBase $PaperclipApi | Out-Null',
+    );
+    ok(gateFn > 0 && gateFail > gateFn, "prerequisite gate must exist before runtime mutation");
+    ok(untouched > 0 && untouched < skipApply, "prerequisite failure must skip installed-plugin mutation");
+    ok(skipApply > gateFail && skipApply < restartCall, "first apply is patch-only and precedes restart");
+    ok(restartCall > skipApply && waitReady > restartCall, "restart precedes bounded backend ready");
+    ok(enableAfterReady > waitReady, "authenticated readiness occurs only after restart/backend-ready");
+    ok((orchestrator.match(/Restart-HuiDotsTask -TaskName/g) || []).length === 1);
+    ok(orchestrator.includes("live HuiDots instance left untouched"));
+    ok(orchestrator.includes("===== HDO ACCEPTANCE SWEEP ====="));
+    ok(orchestrator.includes("HDO_OWNER_APPLY=$overall"));
+    ok(!orchestrator.includes("Read-Host"));
+    ok(!orchestrator.includes("Pause"));
+  });
+
+  it("builds the reviewed UI and syncs server/ui-dist before any live runtime mutation", () => {
+    ok(orchestrator.includes("function Invoke-ReviewedUiPrepare"));
+    ok(orchestrator.includes("function Sync-ServerUiDistFromBuild"));
+    ok(orchestrator.includes("scripts/prepare-server-ui-dist.sh"));
+    ok(orchestrator.includes("dashboard.ui_build"));
+    ok(orchestrator.includes("dashboard.ui_served_sync"));
+    ok(orchestrator.includes("Get-FileHash"));
+    ok(!orchestrator.includes("prepare:ui-dist"));
+    ok(!orchestrator.includes("prepare-server-ui-dist.sh\""));
+    const exampleCall = orchestrator.lastIndexOf("Invoke-ExampleSurface");
+    const uiCall = orchestrator.indexOf("Invoke-ReviewedUiPrepare -Repo");
+    const gateFail = orchestrator.indexOf('Add-Check -Name "runtime.mutation_gate" -Status "FAIL"');
+    const skipApply = orchestrator.indexOf('-ExtraArgs @("-SkipReadiness")');
+    const restartCall = orchestrator.indexOf("Restart-HuiDotsTask -TaskName");
+    const waitReady = orchestrator.indexOf("$backendReady = Wait-BackendReady");
+    const smokeCall = orchestrator.indexOf("& node $smoke");
+    ok(uiCall > exampleCall && uiCall < gateFail, "UI build/sync must follow source/example validation and precede the mutation gate");
+    ok(skipApply > uiCall && restartCall > skipApply, "Telegram patch and task restart must follow served UI sync");
+    ok(smokeCall > waitReady, "browser dashboard acceptance must follow restart/backend ready");
+    ok(orchestrator.includes("function Get-OwnerWorktreePorcelain"));
+    ok(orchestrator.includes("--untracked-files=all"));
+    ok(orchestrator.includes("hdo-owner-dashboard-smoke.mjs"));
+    ok(smoke.includes("guid is not a function"));
+  });
+
+  it("verifies Pixel Strip, Vault Read Bridge, and the Pi timeout source without live Codex UAT", () => {
+    ok(orchestrator.includes("examples.pixel_strip"));
+    ok(orchestrator.includes("examples.vault_read_bridge"));
+    ok(orchestrator.includes("@paperclipai/plugin-pixel-strip-example"));
+    ok(orchestrator.includes("@paperclipai/plugin-vault-read-bridge-example"));
+    ok(orchestrator.includes("pi.timeout_reliability_source"));
+    ok(orchestrator.includes("ac.timeoutSec = 0"));
+    ok(orchestrator.includes("resolveAdapterExecutionTargetTimeoutSec"));
+    ok(orchestrator.includes("codex.live_uat"));
+    ok(orchestrator.includes("not repeated by design"));
+    ok(orchestrator.includes("-DesignedSkip"));
+  });
+});
