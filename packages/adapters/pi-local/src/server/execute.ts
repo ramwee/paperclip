@@ -52,6 +52,16 @@ import { preparePiRuntimeConfig } from "./runtime-config.js";
 import { appendPiWindowsShellGuidance, resolvePiToolAllowlist } from "./tools.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
+export const DEFAULT_PI_OUTPUT_SILENCE_TIMEOUT_SEC = 300;
+/** Absolute wall-clock ceiling for pi_local when timeoutSec is missing, 0, or negative. */
+export const DEFAULT_PI_WALL_TIMEOUT_SEC = 1800;
+
+/** Resolve pi_local wall timeout: missing/0/negative always become the 1800s ceiling. */
+export function resolvePiLocalWallTimeoutSec(configuredTimeoutSec: unknown): number {
+  const configured = asNumber(configuredTimeoutSec, DEFAULT_PI_WALL_TIMEOUT_SEC);
+  return configured > 0 ? configured : DEFAULT_PI_WALL_TIMEOUT_SEC;
+}
+
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
@@ -355,11 +365,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    // Existing agent configs often persist timeoutSec=0 (or historically a negative
+    // "disable") as the UI schema default. For pi_local that must never mean
+    // unlimited: a noisy infinite loop would never trip the silence watchdog.
+    // Missing, zero, and negative values all coerce to the 30-minute wall ceiling.
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
-      asNumber(config.timeoutSec, 0),
+      resolvePiLocalWallTimeoutSec(config.timeoutSec),
     );
     const graceSec = asNumber(config.graceSec, 20);
+    const silenceTimeoutSec = asNumber(
+      config.silenceTimeoutSec,
+      DEFAULT_PI_OUTPUT_SILENCE_TIMEOUT_SEC,
+    );
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
       target: executionTarget,
@@ -735,6 +753,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: userPrompt,
         timeoutSec,
         graceSec,
+        silenceTimeoutSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
@@ -755,18 +774,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const toResult = (
       attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+        proc: {
+          exitCode: number | null;
+          signal: string | null;
+          timedOut: boolean;
+          errorCode?: "timeout" | "stream_silence_timeout" | null;
+          stdout: string;
+          stderr: string;
+        };
         rawStderr: string;
         parsed: ReturnType<typeof parsePiJsonl>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+        const outputSilenceTimedOut = attempt.proc.errorCode === "stream_silence_timeout";
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: attempt.proc.errorCode ?? "timeout",
+          errorMessage: outputSilenceTimedOut
+            ? `Pi produced no output for ${silenceTimeoutSec}s and was terminated`
+            : `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
