@@ -3,9 +3,9 @@
   "companyNameHints": ["HuiDots", "Huidots", "huidots"],
   "packagePath": "companies/huidots",
   "harnessPolicy": {
-    "minimax": { "adapterType": "pi_local", "adapterConfig": { "model": "minimax/MiniMax-M2.5", "thinking": "medium" } },
+    "minimax": { "adapterType": "pi_local", "adapterConfig": { "model": "minimax/MiniMax-M3", "thinking": "medium" } },
     "codex": { "adapterType": "codex_local", "adapterConfig": { "model": "gpt-5.4" } },
-    "cursor": { "adapterType": "cursor", "adapterConfig": { "model": "gpt-5.4" } }
+    "cursor": { "adapterType": "cursor", "adapterConfig": { "model": "auto" } }
   },
   "agents": [
     { "slug": "ceo", "name": "CEO", "title": "Chief Executive Officer", "role": "ceo", "reportsTo": null, "harness": "minimax", "paused": false, "canCreateAgents": true },
@@ -34,7 +34,7 @@
       "title": "KIV / Opportunity Review",
       "assignee": "cso",
       "cronExpression": "0 9 * * 1",
-      "timezone": "America/Singapore",
+      "timezone": "Asia/Singapore",
       "description": "Weekly CSO KIV/opportunity review. Walk open KIVs through research → evaluate → BA → recommendation. Escalate material bets to CEO."
     },
     {
@@ -42,7 +42,7 @@
       "title": "Media / Channel / Account Monitor",
       "assignee": "cmo",
       "cronExpression": "0 */6 * * *",
-      "timezone": "America/Singapore",
+      "timezone": "Asia/Singapore",
       "description": "Monitor multi-brand social/marketplace channels and performance. Never touch Owner personal accounts. Open follow-ups for anomalies."
     },
     {
@@ -50,7 +50,7 @@
       "title": "AI Workforce / Capacity Review",
       "assignee": "chro",
       "cronExpression": "0 10 * * 1",
-      "timezone": "America/Singapore",
+      "timezone": "Asia/Singapore",
       "description": "Review AI workforce capacity across MiniMax/Codex/Cursor. Keep Summarizer and Reflection Coach paused unless CEO directed otherwise."
     },
     {
@@ -58,7 +58,7 @@
       "title": "Cross-company Execution Follow-up",
       "assignee": "coo",
       "cronExpression": "0 9 * * 1-5",
-      "timezone": "America/Singapore",
+      "timezone": "Asia/Singapore",
       "description": "Follow up stalled cross-company execution. Chase through owning executives. Escalate systemic delays to CEO."
     }
   ],

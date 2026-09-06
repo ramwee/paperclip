@@ -3,7 +3,7 @@ name: KIV / Opportunity Review
 assignee: cso
 recurring: true
 schedule:
-  timezone: America/Singapore
+  timezone: Asia/Singapore
   recurrence:
     cronExpression: "0 9 * * 1"
 ---
