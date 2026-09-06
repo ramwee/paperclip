@@ -1,0 +1,24 @@
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+index 429809c8d..4af0322b5 100644
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -1690,6 +1690,7 @@ export const PLUGIN_EVENT_TYPES = [
+   "issue.document.updated",
+   "issue.document.deleted",
+   "issue.relations.updated",
++  "issue.thread_interaction.created",
+   "issue.checked_out",
+   "issue.released",
+   "issue.assignment_wakeup_requested",
+diff --git a/server/src/services/activity-log.ts b/server/src/services/activity-log.ts
+index 4c75f0752..764c00134 100644
+--- a/server/src/services/activity-log.ts
++++ b/server/src/services/activity-log.ts
+@@ -19,6 +19,7 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
+   issue_document_updated: "issue.document.updated",
+   issue_document_deleted: "issue.document.deleted",
+   issue_blockers_updated: "issue.relations.updated",
++  issue_thread_interaction_created: "issue.thread_interaction.created",
+   approval_approved: "approval.decided",
+   approval_rejected: "approval.decided",
+   approval_revision_requested: "approval.decided",
