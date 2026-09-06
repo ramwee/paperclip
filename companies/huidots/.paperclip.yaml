@@ -4,7 +4,7 @@ agents:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
     permissions:
       canCreateAgents: true
@@ -12,37 +12,37 @@ agents:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   cto:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   cro:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   cmo:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   cso:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   chro:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   web-engineer:
     adapter:
@@ -58,62 +58,62 @@ agents:
     adapter:
       type: cursor
       config:
-        model: gpt-5.4
+        model: auto
   engineering-reviewer:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   production-director:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   content-producer:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   video-editor:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   production-qa:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   research-director:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   business-analyst:
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   summarizer:
     desiredStatus: paused
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
   reflection-coach:
     desiredStatus: paused
     adapter:
       type: pi_local
       config:
-        model: minimax/MiniMax-M2.5
+        model: minimax/MiniMax-M3
         thinking: medium
 routines:
   cso-kiv-opportunity-review:
@@ -121,22 +121,22 @@ routines:
     triggers:
       - kind: schedule
         cronExpression: "0 9 * * 1"
-        timezone: America/Singapore
+        timezone: Asia/Singapore
   cmo-media-channel-monitor:
     assignee: cmo
     triggers:
       - kind: schedule
         cronExpression: "0 */6 * * *"
-        timezone: America/Singapore
+        timezone: Asia/Singapore
   chro-workforce-capacity-review:
     assignee: chro
     triggers:
       - kind: schedule
         cronExpression: "0 10 * * 1"
-        timezone: America/Singapore
+        timezone: Asia/Singapore
   coo-execution-follow-up:
     assignee: coo
     triggers:
       - kind: schedule
         cronExpression: "0 9 * * 1-5"
-        timezone: America/Singapore
+        timezone: Asia/Singapore

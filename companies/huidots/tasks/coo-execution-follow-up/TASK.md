@@ -3,7 +3,7 @@ name: Cross-company Execution Follow-up
 assignee: coo
 recurring: true
 schedule:
-  timezone: America/Singapore
+  timezone: Asia/Singapore
   recurrence:
     cronExpression: "0 9 * * 1-5"
 ---

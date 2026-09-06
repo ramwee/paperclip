@@ -3,7 +3,7 @@ name: AI Workforce / Capacity Review
 assignee: chro
 recurring: true
 schedule:
-  timezone: America/Singapore
+  timezone: Asia/Singapore
   recurrence:
     cronExpression: "0 10 * * 1"
 ---

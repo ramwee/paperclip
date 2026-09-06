@@ -3,7 +3,7 @@ name: Media / Channel / Account Monitor
 assignee: cmo
 recurring: true
 schedule:
-  timezone: America/Singapore
+  timezone: Asia/Singapore
   recurrence:
     cronExpression: "0 */6 * * *"
 ---
