@@ -4,6 +4,7 @@ param(
   [string]$ExpectedBranch = "examples/pixel-strip-and-vault-read-bridge-clean",
   [string]$BaseSha = "def9c581b48a1fea845bb7b4a8726e201a3ad5d2",
   [string]$ForwardPortBranch = "fix/hdo-windows-dashboard-telegram-forward-port",
+  [string]$OwnerFetchRef = "refs/hdo-owner/forward-port",
   [string]$ScheduledTaskName = "HuiDots Paperclip",
   [int]$ReadyTimeoutSec = 180
 )
@@ -128,6 +129,18 @@ function Test-GitAncestor {
   param([string]$Repo, [string]$Ancestor, [string]$Descendant)
   git -C $Repo merge-base --is-ancestor $Ancestor $Descendant
   return ($LASTEXITCODE -eq 0)
+}
+
+function Get-FetchedForwardPortSha {
+  param([string]$Repo, [string]$Branch, [string]$FetchRef)
+  # Explicit refspec into a dedicated local ref. Do not require origin/<branch>
+  # to exist — a limited remote.fetch config only updates FETCH_HEAD.
+  Get-GitText -Repo $Repo -GitArgs @("fetch", "origin", "${Branch}:${FetchRef}") | Out-Null
+  $sha = Get-GitText -Repo $Repo -GitArgs @("rev-parse", "--verify", "${FetchRef}^{commit}")
+  if ([string]::IsNullOrWhiteSpace($sha) -or $sha.Length -lt 40) {
+    throw "Fetched SHA from $FetchRef is missing or not a commit."
+  }
+  return $sha
 }
 
 function Get-NodeVersion {
@@ -426,25 +439,24 @@ try {
 }
 
 try {
-  Get-GitText -Repo $repo -GitArgs @("fetch", "origin", $ForwardPortBranch) | Out-Null
-  $remoteHead = Get-GitText -Repo $repo -GitArgs @("rev-parse", "origin/$ForwardPortBranch")
+  $fetchedSha = Get-FetchedForwardPortSha -Repo $repo -Branch $ForwardPortBranch -FetchRef $OwnerFetchRef
   $localHead = Get-GitText -Repo $repo -GitArgs @("rev-parse", "HEAD")
-  if (-not (Test-GitAncestor -Repo $repo -Ancestor $BaseSha -Descendant $remoteHead)) {
-    Stop-Unsafe -Name "repo.fast_forward" -Detail "origin/$ForwardPortBranch ($remoteHead) is not a descendant of $BaseSha."
+  if (-not (Test-GitAncestor -Repo $repo -Ancestor $BaseSha -Descendant $fetchedSha)) {
+    Stop-Unsafe -Name "repo.fast_forward" -Detail "Fetched $ForwardPortBranch ($fetchedSha) is not a descendant of $BaseSha."
   }
-  if ($localHead -eq $remoteHead) {
-    Add-Check -Name "repo.fast_forward" -Status "PASS" -Detail "already-at $remoteHead"
+  if ($localHead -eq $fetchedSha) {
+    Add-Check -Name "repo.fast_forward" -Status "PASS" -Detail "already-at $fetchedSha via $OwnerFetchRef"
   } else {
-    if (-not (Test-GitAncestor -Repo $repo -Ancestor $localHead -Descendant $remoteHead)) {
-      Stop-Unsafe -Name "repo.fast_forward" -Detail "HEAD ($localHead) is not a clean ancestor of origin/$ForwardPortBranch ($remoteHead). No reset, force, checkout, or conflict resolution will be attempted."
+    if (-not (Test-GitAncestor -Repo $repo -Ancestor $localHead -Descendant $fetchedSha)) {
+      Stop-Unsafe -Name "repo.fast_forward" -Detail "HEAD ($localHead) is not a clean ancestor of fetched $fetchedSha. No reset, force, checkout, or conflict resolution will be attempted."
     }
-    Get-GitText -Repo $repo -GitArgs @("merge", "--ff-only", $remoteHead) | Out-Null
+    Get-GitText -Repo $repo -GitArgs @("merge", "--ff-only", $fetchedSha) | Out-Null
     $after = Get-GitText -Repo $repo -GitArgs @("rev-parse", "HEAD")
     $stillOn = Get-GitText -Repo $repo -GitArgs @("branch", "--show-current")
-    if ($stillOn -ne $ExpectedBranch -or $after -ne $remoteHead) {
+    if ($stillOn -ne $ExpectedBranch -or $after -ne $fetchedSha) {
       Stop-Unsafe -Name "repo.fast_forward" -Detail "Fast-forward landed on branch=$stillOn head=$after"
     }
-    Add-Check -Name "repo.fast_forward" -Status "PASS" -Detail "$localHead -> $after"
+    Add-Check -Name "repo.fast_forward" -Status "PASS" -Detail "$localHead -> $after via $OwnerFetchRef"
   }
 } catch {
   if ($script:UnsafeStop) { throw }

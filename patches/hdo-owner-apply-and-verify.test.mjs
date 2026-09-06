@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { match, ok } from "node:assert/strict";
+import { equal, match, ok } from "node:assert/strict";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const orchestrator = readFileSync(path.join(dir, "hdo-owner-apply-and-verify.ps1"), "utf8");
@@ -14,8 +16,9 @@ describe("HuiDots owner apply-and-verify contract", () => {
   it("documents one bootstrap command that fetches the PR without a branch switch", () => {
     match(
       readme,
-      /git fetch origin fix\/hdo-windows-dashboard-telegram-forward-port; git show origin\/fix\/hdo-windows-dashboard-telegram-forward-port:patches\/hdo-owner-apply-and-verify\.ps1 \| powershell -NoProfile -ExecutionPolicy Bypass -Command -/,
+      /git fetch origin fix\/hdo-windows-dashboard-telegram-forward-port:refs\/hdo-owner\/forward-port; git show refs\/hdo-owner\/forward-port:patches\/hdo-owner-apply-and-verify\.ps1 \| powershell -NoProfile -ExecutionPolicy Bypass -Command -/,
     );
+    ok(!readme.includes("git show origin/"), "bootstrap must not dereference origin/<branch>");
     ok(!readme.includes("git checkout"), "bootstrap must not ask the Owner to check out a branch");
     ok(!readme.includes("git switch"), "bootstrap must not ask the Owner to switch branches");
   });
@@ -53,6 +56,13 @@ describe("HuiDots owner apply-and-verify contract", () => {
 
   it("fast-forwards only, with no reset/force/checkout/master merge", () => {
     ok(orchestrator.includes('merge", "--ff-only"') || orchestrator.includes("merge --ff-only"));
+    ok(orchestrator.includes("function Get-FetchedForwardPortSha"));
+    ok(orchestrator.includes("${Branch}:${FetchRef}"));
+    ok(orchestrator.includes("refs/hdo-owner/forward-port"));
+    ok(orchestrator.includes("$fetchedSha"));
+    ok(!orchestrator.includes("origin/$ForwardPortBranch"));
+    ok(!orchestrator.includes('rev-parse", "origin/'));
+    ok(!orchestrator.includes("rev-parse origin/"));
     ok(orchestrator.includes("fetch"));
     ok(!/git(?:\.exe)?\s+reset/i.test(orchestrator));
     ok(!/git(?:\.exe)?\s+checkout/i.test(orchestrator));
@@ -61,6 +71,77 @@ describe("HuiDots owner apply-and-verify contract", () => {
     ok(!/-B\b/.test(orchestrator));
     ok(!/merge.*master/.test(orchestrator));
     ok(!/merge.*main/.test(orchestrator));
+  });
+
+  it("can fetch and show the orchestrator when origin/<branch> does not exist", () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "hdo-owner-fetch-"));
+    const git = (cwd, args) =>
+      execFileSync("git", ["-c", "user.name=hdo-test", "-c", "user.email=hdo@test", ...args], {
+        cwd,
+        encoding: "utf8",
+      }).trim();
+    try {
+      const remote = path.join(tmp, "remote.git");
+      const local = path.join(tmp, "local");
+      git(tmp, ["init", "--bare", remote]);
+      const seed = path.join(tmp, "seed");
+      git(tmp, ["init", "-b", "examples/pixel-strip-and-vault-read-bridge-clean", seed]);
+      writeFileSync(path.join(seed, "README"), "runtime\n");
+      git(seed, ["add", "README"]);
+      git(seed, ["commit", "-m", "runtime base"]);
+      git(seed, ["remote", "add", "origin", remote]);
+      git(seed, ["push", "-u", "origin", "HEAD"]);
+      git(seed, ["checkout", "-b", "fix/hdo-windows-dashboard-telegram-forward-port"]);
+      mkdirSync(path.join(seed, "patches"), { recursive: true });
+      writeFileSync(path.join(seed, "patches", "hdo-owner-apply-and-verify.ps1"), "Write-Host fetched-orchestrator\n");
+      git(seed, ["add", "patches/hdo-owner-apply-and-verify.ps1"]);
+      git(seed, ["commit", "-m", "forward-port"]);
+      git(seed, ["push", "origin", "HEAD"]);
+
+      git(tmp, [
+        "clone",
+        "--single-branch",
+        "--branch",
+        "examples/pixel-strip-and-vault-read-bridge-clean",
+        remote,
+        local,
+      ]);
+      git(local, [
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/examples/pixel-strip-and-vault-read-bridge-clean:refs/remotes/origin/examples/pixel-strip-and-vault-read-bridge-clean",
+      ]);
+
+      let originBranchExists = true;
+      try {
+        git(local, ["rev-parse", "--verify", "origin/fix/hdo-windows-dashboard-telegram-forward-port"]);
+      } catch {
+        originBranchExists = false;
+      }
+      ok(!originBranchExists, "fixture must start without origin/fix/... remote-tracking ref");
+
+      git(local, [
+        "fetch",
+        "origin",
+        "fix/hdo-windows-dashboard-telegram-forward-port:refs/hdo-owner/forward-port",
+      ]);
+      const fetched = git(local, ["rev-parse", "--verify", "refs/hdo-owner/forward-port^{commit}"]);
+      match(fetched, /^[0-9a-f]{40}$/);
+      const shown = git(local, ["show", "refs/hdo-owner/forward-port:patches/hdo-owner-apply-and-verify.ps1"]);
+      match(shown, /fetched-orchestrator/);
+      const current = git(local, ["branch", "--show-current"]);
+      equal(current, "examples/pixel-strip-and-vault-read-bridge-clean");
+
+      let stillMissingOriginBranch = false;
+      try {
+        git(local, ["rev-parse", "--verify", "origin/fix/hdo-windows-dashboard-telegram-forward-port"]);
+      } catch {
+        stillMissingOriginBranch = true;
+      }
+      ok(stillMissingOriginBranch, "dedicated refspec must not require origin/<branch>");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("covers Node/pnpm policy, Zod 4, Vite cache, and Windows ESM file:// behavior", () => {
