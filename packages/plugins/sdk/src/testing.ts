@@ -44,6 +44,9 @@ import type {
   PrincipalPermissionGrant,
   PermissionKey,
   PrincipalType,
+  PluginAttentionItem,
+  PluginTimelineEvent,
+  PluginCostsSummary,
 } from "./types.js";
 import { NOOP_PLUGIN_TRACER } from "./types.js";
 import type {
@@ -120,6 +123,9 @@ export interface TestHarness {
     executionWorkspaces?: PluginExecutionWorkspaceMetadata[];
     accessMembers?: PluginAccessMember[];
     principalGrants?: PrincipalPermissionGrant[];
+    attentionItems?: Array<PluginAttentionItem & { companyId: string }>;
+    timelineEvents?: PluginTimelineEvent[];
+    costsSummaries?: PluginCostsSummary[];
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
@@ -506,6 +512,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const goals = new Map<string, Goal>();
   const accessMembers = new Map<string, PluginAccessMember>();
   const principalGrants = new Map<string, PrincipalPermissionGrant[]>();
+  const attentionByCompany = new Map<string, PluginAttentionItem[]>();
+  const timelineByCompany = new Map<string, PluginTimelineEvent[]>();
+  const costsByCompany = new Map<string, PluginCostsSummary>();
 
   function principalGrantsKey(companyId: string, principalType: PrincipalType, principalId: string) {
     return `${companyId}:${principalType}:${principalId}`;
@@ -1553,6 +1562,77 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "companies.read");
         return companies.get(companyId) ?? null;
       },
+      attention: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "attention.read");
+          const cid = requireCompanyId(input?.companyId);
+          let rows = [...attentionByCompany.get(cid) ?? []];
+          if (input?.queue) rows = rows.filter((row) => row.shelf === input.queue);
+          if (input?.archived === true) {
+            // keep all
+          } else if (input?.archived === false) {
+            rows = rows.filter((row) => row.archivedAt === null);
+          }
+          if (input?.includeDismissed !== true) {
+            rows = rows.filter((row) => row.state !== "dismissed");
+          }
+          if (input?.activitySince) {
+            rows = rows.filter((row) => row.activityAt >= input.activitySince!);
+          }
+          if (input?.activityUntil) {
+            rows = rows.filter((row) => row.activityAt <= input.activityUntil!);
+          }
+          if (input?.sort === "decide") {
+            rows.sort((a, b) => (a.state === "decide" ? -1 : 1));
+          } else if (input?.sort === "activity" || input?.sort === undefined) {
+            rows.sort((a, b) => (a.activityAt < b.activityAt ? 1 : -1));
+          }
+          if (input?.limit !== undefined) rows = rows.slice(0, input.limit);
+          return {
+            items: rows,
+            nextCursor: rows.length > 0 ? null : null,
+            generatedAt: new Date().toISOString(),
+          };
+        },
+      },
+      timeline: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "activity.read");
+          const cid = requireCompanyId(input?.companyId);
+          let rows = [...timelineByCompany.get(cid) ?? []];
+          if (input?.from) rows = rows.filter((row) => row.occurredAt >= input.from!);
+          if (input?.to) rows = rows.filter((row) => row.occurredAt <= input.to!);
+          if (input?.userId) rows = rows.filter((row) => row.actor?.id === input.userId);
+          if (input?.goalId) rows = rows.filter((row) => row.target?.type === "goal" && row.target.id === input.goalId);
+          if (input?.projectId) rows = rows.filter((row) => row.target?.type === "project" && row.target.id === input.projectId);
+          if (input?.issueId) rows = rows.filter((row) => row.target?.type === "issue" && row.target.id === input.issueId);
+          rows.sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1));
+          const offset = input?.offset ?? 0;
+          rows = rows.slice(offset);
+          if (input?.limit !== undefined) rows = rows.slice(0, input.limit);
+          const nextOffset = rows.length === (input?.limit ?? rows.length) ? offset + rows.length : null;
+          return {
+            events: rows,
+            nextOffset,
+            generatedAt: new Date().toISOString(),
+          };
+        },
+      },
+      costs: {
+        async summary(input) {
+          requireCapability(manifest, capabilitySet, "costs.read");
+          const cid = requireCompanyId(input?.companyId);
+          const snapshot = costsByCompany.get(cid) ?? null;
+          return {
+            companyId: cid,
+            range: { from: input?.from ?? null, to: input?.to ?? null },
+            totalCostCents: snapshot?.totalCostCents ?? 0,
+            byAgent: snapshot?.byAgent ?? [],
+            byProvider: snapshot?.byProvider ?? [],
+            generatedAt: new Date().toISOString(),
+          };
+        },
+      },
     },
     issues: {
       async list(input) {
@@ -2555,6 +2635,19 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const list = principalGrants.get(principalGrantsKey(row.companyId, row.principalType, row.principalId)) ?? [];
         list.push(row);
         principalGrants.set(principalGrantsKey(row.companyId, row.principalType, row.principalId), list);
+      }
+      for (const row of input.attentionItems ?? []) {
+        const list = attentionByCompany.get(row.companyId) ?? [];
+        list.push(row);
+        attentionByCompany.set(row.companyId, list);
+      }
+      for (const row of input.timelineEvents ?? []) {
+        const list = timelineByCompany.get(row.companyId) ?? [];
+        list.push(row);
+        timelineByCompany.set(row.companyId, list);
+      }
+      for (const row of input.costsSummaries ?? []) {
+        costsByCompany.set(row.companyId, row);
       }
     },
     setConfig(config) {

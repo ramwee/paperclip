@@ -11,25 +11,33 @@ import {
   PROJECT_TAB_PIXEL_AGENTS_SLOT_ID,
   PROJECT_TAB_VAULT_EXPORT_NAME,
   PROJECT_TAB_VAULT_SLOT_ID,
-  SIDEBAR_EXPORT_NAME,
-  SIDEBAR_SLOT_ID,
+  TOOLBAR_BUTTON_EXPORT_NAME,
+  TOOLBAR_BUTTON_SLOT_ID,
 } from "./constants.js";
 
 /**
  * F1 huidots-console-overview manifest.
  *
- * Constraints (binding, see HDO-137 / HDO-117.C1):
- *   - read-only host data flow (no issues.write / comments.write / documents.write)
- *   - zero localFolders.write capabilities (the F1 plugin has no
- *     localFolders declaration at all)
- *   - no bundled credentials (all Paperclip API calls use the host's
- *     authenticated context client)
+ * The plugin ships only what the F1 acceptance criteria require:
  *
- * The plugin contributes four UI slots:
- *   - `sidebar`        → top-bar "Console" tab in the app sidebar
- *   - `page`           → the live company-state screen reached from that tab
- *   - `detailTab`      → two per-project placeholder tabs (Vault, Pixel Agents)
- *     reserved for the F3 / F2 extension waves on 2026-09-21.
+ *   - A `globalToolbarButton` slot that mounts the "Console" tab in the host's
+ *     top-bar / breadcrumb bar on every page.
+ *   - A `page` slot at `routePath: "console"` (resolves to `/:companyPrefix/console`).
+ *   - Two `detailTab` slots (Vault and Pixel Agents) that render empty-state
+ *     cards until the F2/F3 extension waves ship.
+ *   - Capability-gated read access to the six KPI endpoints. Every endpoint is
+ *     reached through the host's authenticated bridge — no outbound HTTP, no
+ *     local-folder declarations, no host writes.
+ *
+ * Hard constraints (binding, see HDO-137 spec):
+ *   - No schema change in Paperclip core.
+ *   - No write to Paperclip from the dashboard plugin (no issues.write,
+ *     comments.write, documents.write, no plugin local-folder write).
+ *   - No third-party SaaS, no remote vault service, no remote pixel-office
+ *     renderer.
+ *   - No bundled credentials.
+ *   - The plugin declares zero plugin local-folder write capabilities (this
+ *     F1 plugin has no local-folder declaration at all).
  */
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -41,7 +49,7 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["ui"],
   minimumHostVersion: ">=2026.09.04",
   capabilities: [
-    "ui.sidebar.register",
+    "ui.action.register",
     "ui.page.register",
     "ui.detailTab.register",
     "companies.read",
@@ -49,9 +57,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.read",
     "agents.read",
     "goals.read",
-    "costs.read",
     "activity.read",
+    "attention.read",
+    "costs.read",
     "plugin.state.read",
+    "events.subscribe",
+    "events.emit",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -60,10 +71,10 @@ const manifest: PaperclipPluginManifestV1 = {
   ui: {
     slots: [
       {
-        type: "sidebar",
-        id: SIDEBAR_SLOT_ID,
+        type: "globalToolbarButton",
+        id: TOOLBAR_BUTTON_SLOT_ID,
         displayName: "Console",
-        exportName: SIDEBAR_EXPORT_NAME,
+        exportName: TOOLBAR_BUTTON_EXPORT_NAME,
         order: 5,
       },
       {

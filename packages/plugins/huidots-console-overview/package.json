@@ -1,6 +1,6 @@
 {
   "name": "@huidots/huidots-console-overview",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "HuiDots Console — Live Company State Screen. F1 dashboard surfacing Paperclip state (agents, open issues, attention, runs, goals, costs) plus per-project Vault and Pixel Agents scaffolding.",
   "type": "module",
   "private": true,

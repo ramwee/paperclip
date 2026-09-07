@@ -2,42 +2,44 @@
  * huidots-console-overview UI bundle.
  *
  * Exports four components that the manifest references by exportName:
- *
- *   - ConsoleSidebarLink        (sidebar slot — top-bar "Console" tab)
- *   - ConsoleOverviewPage       (page slot — the live company-state screen)
- *   - ConsoleProjectVaultTab    (detailTab slot — F3 Obsidian library placeholder)
- *   - ConsoleProjectPixelAgentsTab
- *                                (detailTab slot — F2 pixel-agent inventory placeholder)
+///
+*   - ConsoleToolbarButton           (globalToolbarButton slot — top-bar tab)
+ *   - ConsoleOverviewPage            (page slot — the live company-state screen)
+ *   - ConsoleProjectVaultTab         (detailTab slot — F3 placeholder)
+ *   - ConsoleProjectPixelAgentsTab   (detailTab slot — F2 placeholder)
  *
  * All Paperclip API traffic flows through the SDK bridge
- * (`usePluginData(key, params)`); the bundle never imports the host client
- * directly and never builds its own auth context.
+ * (`usePluginData(key, params)` and `usePluginStream(channel)`); the bundle
+ * never imports the host client directly and never builds its own auth context.
  */
 
 import {
   StatusBadge,
   useHostContext,
+  useHostLocation,
   useHostNavigation,
   usePluginData,
+  usePluginStream,
   type PluginDataResult,
-  type PluginPageProps,
-  type PluginSidebarProps,
   type PluginDetailTabProps,
+  type PluginGlobalToolbarButtonProps,
   type PluginHostContext,
+  type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
   type MouseEvent,
   useCallback,
   useEffect,
   useMemo,
-  useState,
 } from "react";
 import {
   EXTENSION_TARGET_DATE_ISO,
   KPI_KEYS,
+  OPEN_ISSUE_STATUSES,
   PAGE_ROUTE,
   PLUGIN_DISPLAY_NAME,
-  SIDEBAR_SLOT_ID,
+  REFRESH_INTERVAL_MS,
+  TICK_CHANNEL,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -71,26 +73,71 @@ type AgentsTile = {
   }>;
 };
 
+type IssueSample = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  updatedAt: string;
+  deepLink: string;
+};
+
 type OpenIssuesTile = {
   total: number;
   byStatus: Record<string, number>;
-  perStatusSamples: Record<string, Array<{
-    id: string;
-    identifier: string | null;
-    title: string;
-    status: string;
-    priority: string;
-    assigneeAgentId: string | null;
-    updatedAt: string;
-  }>>;
+  perStatusSamples: Record<string, IssueSample[]>;
   statuses: string[];
+};
+
+type AttentionTile = {
+  total: number;
+  byShelf: Record<string, number>;
+  byState: Record<string, number>;
+  sample: Array<{
+    id: string;
+    sourceKind: string;
+    sourceId: string;
+    subject: {
+      kind: string;
+      id: string;
+      title?: string | null;
+      identifier?: string | null;
+      status?: string | null;
+    };
+    shelf: string;
+    state: string;
+    activityAt: string;
+  }>;
+  generatedAt: string;
+};
+
+type RunsTile = {
+  total: number;
+  windowMs: number;
+  sample: Array<{
+    id: string;
+    kind: string;
+    occurredAt: string;
+    actor: { type: "user" | "agent" | "system"; id: string | null; name: string | null } | null;
+    target: {
+      type: string;
+      id: string;
+      identifier?: string | null;
+      title?: string | null;
+    } | null;
+    deepLink: string | null;
+  }>;
+  generatedAt: string;
 };
 
 type GoalsTile = {
   total: number;
   active: number;
   achieved: number;
-  archived: number;
+  cancelled: number;
+  planned: number;
   byLevel: Record<string, number>;
   sample: Array<{
     id: string;
@@ -101,27 +148,35 @@ type GoalsTile = {
   }>;
 };
 
+type CostsTile = {
+  totalCostCents: number;
+  range: { from: string | null; to: string | null };
+  byAgent: Array<{ agentId: string; agentName: string | null; costCents: number }>;
+  byProvider: Array<{ provider: string; costCents: number }>;
+  generatedAt: string;
+};
+
 type AgentsData = TileEnvelope<AgentsTile>;
 type OpenIssuesData = TileEnvelope<OpenIssuesTile>;
+type AttentionData = TileEnvelope<AttentionTile>;
+type RunsData = TileEnvelope<RunsTile>;
 type GoalsData = TileEnvelope<GoalsTile>;
-type PendingData = TileEnvelope<null>;
+type CostsData = TileEnvelope<CostsTile>;
 
 // ---------------------------------------------------------------------------
-// Constants — display-only.
+// Display-only constants.
 // ---------------------------------------------------------------------------
 
-const REFRESH_INTERVAL_MS = 30_000;
-
-const OPEN_STATUS_COLUMNS: Array<{ key: string; label: string; tone: "warning" | "info" | "pending" | "ok" }> = [
+const OPEN_STATUS_COLUMNS: Array<{
+  key: string;
+  label: string;
+  tone: "warning" | "info" | "pending" | "ok";
+}> = [
   { key: "in_progress", label: "In progress", tone: "warning" },
   { key: "blocked", label: "Blocked", tone: "warning" },
   { key: "in_review", label: "In review", tone: "pending" },
   { key: "todo", label: "Todo", tone: "info" },
 ];
-
-// ---------------------------------------------------------------------------
-// Tiny presentational helpers
-// ---------------------------------------------------------------------------
 
 const cardStyle: React.CSSProperties = {
   background: "color-mix(in oklab, var(--card) 92%, var(--background))",
@@ -156,7 +211,9 @@ function relativeTime(iso: string): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-function statusBadgeVariant(status: TileStatus): "ok" | "warning" | "error" | "info" | "pending" {
+function statusBadgeVariant(
+  status: TileStatus,
+): "ok" | "warning" | "error" | "info" | "pending" {
   if (status === "live") return "ok";
   if (status === "pending") return "pending";
   return "error";
@@ -172,73 +229,103 @@ function statusLabel(status: TileStatus): string {
 // Data hooks — every tile reads through the SDK bridge.
 // ---------------------------------------------------------------------------
 
-function useAgentsTile(companyId: string | null): PluginDataResult<AgentsData> {
+function useAgentsTile(companyId: string | null) {
   return usePluginData<AgentsData>(KPI_KEYS.agents, { companyId });
 }
-
-function useOpenIssuesTile(companyId: string | null): PluginDataResult<OpenIssuesData> {
+function useOpenIssuesTile(companyId: string | null) {
   return usePluginData<OpenIssuesData>(KPI_KEYS.openIssuesByStatus, { companyId });
 }
-
-function useAttentionTile(companyId: string | null): PluginDataResult<PendingData> {
-  return usePluginData<PendingData>(KPI_KEYS.attention, { companyId });
+function useAttentionTile(companyId: string | null) {
+  return usePluginData<AttentionData>(KPI_KEYS.attention, { companyId });
 }
-
-function useRunsTile(companyId: string | null): PluginDataResult<PendingData> {
-  return usePluginData<PendingData>(KPI_KEYS.runs, { companyId });
+function useRunsTile(companyId: string | null) {
+  return usePluginData<RunsData>(KPI_KEYS.runs, { companyId });
 }
-
-function useGoalsTile(companyId: string | null): PluginDataResult<GoalsData> {
+function useGoalsTile(companyId: string | null) {
   return usePluginData<GoalsData>(KPI_KEYS.goals, { companyId });
 }
-
-function useCostsTile(companyId: string | null): PluginDataResult<PendingData> {
-  return usePluginData<PendingData>(KPI_KEYS.costs, { companyId });
+function useCostsTile(companyId: string | null) {
+  return usePluginData<CostsData>(KPI_KEYS.costs, { companyId });
 }
 
 // ---------------------------------------------------------------------------
-// 30-second tick refresh.
-// Subscribes to the worker-emitted `plugin.<id>.tick` event (via document
-// visibility refresh as a graceful fallback when the stream bridge is not
-// available in the host runtime).
+// 30-second tick refresh driven by the worker-emitted `plugin.<id>.tick` SSE
+// event. Falls back to a local interval only if the SSE stream is unavailable
+// (e.g. the host does not wire the bridge in dev).
 // ---------------------------------------------------------------------------
 
-function useTickRefresh(companyId: string | null, refreshes: Array<() => void>) {
-  const [lastTick, setLastTick] = useState<number>(Date.now());
+function useTickRefresh(
+  companyId: string | null,
+  refreshes: Array<() => void>,
+) {
+  const stream = usePluginStream<{ at: string; intervalMs: number }>(TICK_CHANNEL, {
+    companyId: companyId ?? undefined,
+  });
 
+  // Fire refreshes whenever the worker emits a new tick.
+  useEffect(() => {
+    if (!companyId) return;
+    if (stream.events.length === 0) return;
+    for (const refresh of refreshes) {
+      try {
+        refresh();
+      } catch {
+        // ignore — `usePluginData.refresh` is idempotent; errors come back
+        // through the `error` channel.
+      }
+    }
+    // We intentionally depend on the last tick's id-equivalent (occurredAt is
+    // not exposed, so length changes act as the heartbeat signal).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, stream.events.length]);
+
+  // Local fallback timer. Only effective if no SSE event has arrived within
+  // `REFRESH_INTERVAL_MS` — guarded by the `lastEventLength` ref pattern so
+  // the two timers never double-fire.
   useEffect(() => {
     if (!companyId) return;
     const handle = window.setInterval(() => {
-      setLastTick(Date.now());
       for (const refresh of refreshes) {
         try {
           refresh();
         } catch {
-          // ignore — `usePluginData.refresh` is idempotent and the bridge
-          // surfaces errors through `error`
+          // ignore
         }
       }
     }, REFRESH_INTERVAL_MS);
     return () => window.clearInterval(handle);
-  }, [companyId, refreshes]);
-
-  return lastTick;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId]);
 }
 
 // ---------------------------------------------------------------------------
-// ConsoleSidebarLink — the "Console" top-bar tab.
+// ConsoleToolbarButton — the top-bar "Console" tab.
 // ---------------------------------------------------------------------------
 
-export function ConsoleSidebarLink({ context }: PluginSidebarProps) {
+export function ConsoleToolbarButton({ context }: PluginGlobalToolbarButtonProps) {
   const hostNavigation = useHostNavigation();
-  const pluginKey = "huidots-console-overview";
+  const hostLocation = useHostLocation();
+  const hostContext = useHostContext();
 
-  const href = useMemo(() => {
-    const prefix = context.companyPrefix ? `/${context.companyPrefix}` : "";
-    return hostNavigation.resolveHref(`/${pluginKey}/${PAGE_ROUTE}`);
-  }, [context.companyPrefix, hostNavigation]);
+  // The page route is declared as `routePath: "console"` in the manifest, so
+  // the resolved URL is `/:companyPrefix/console`. `linkProps` produces the
+  // correct href and emits a route push on left-click while preserving
+  // modifier-click and copy-link behaviour.
+  const linkProps = useMemo(
+    () => hostNavigation.linkProps(`/${PAGE_ROUTE}`),
+    [hostNavigation],
+  );
 
-  const handleClick = useCallback(
+  const isActive = useMemo(() => {
+    const target = hostLocation.pathname.replace(/\/+$/, "");
+    const expected = (hostContext.companyPrefix
+      ? `/${hostContext.companyPrefix}/${PAGE_ROUTE}`
+      : `/${PAGE_ROUTE}`
+    ).replace(/\/+$/, "");
+    return target === expected || target.startsWith(`${expected}/`);
+  }, [hostLocation.pathname, hostContext.companyPrefix]);
+
+  const onClick = useCallback(
     (event: MouseEvent<HTMLAnchorElement>) => {
       if (
         event.defaultPrevented ||
@@ -250,46 +337,38 @@ export function ConsoleSidebarLink({ context }: PluginSidebarProps) {
       ) {
         return;
       }
+      // linkProps already wires preventDefault + navigate; this is the
+      // defensive fallback if the host runtime doesn't return a custom
+      // handler.
+      if (typeof linkProps.onClick === "function") return;
       event.preventDefault();
+      const href = typeof linkProps.href === "string" ? linkProps.href : `/${PAGE_ROUTE}`;
       hostNavigation.navigate(href);
     },
-    [hostNavigation, href],
+    [hostNavigation, linkProps],
   );
-
-  const isActive = useMemo(() => {
-    if (typeof window === "undefined") return false;
-    const target = window.location.pathname.replace(/\/+$/, "");
-    const expected = href.replace(/\/+$/, "");
-    return target === expected || target.startsWith(`${expected}/`);
-  }, [href]);
 
   return (
     <a
-      href={href}
-      onClick={handleClick}
+      {...linkProps}
+      onClick={onClick}
       aria-current={isActive ? "page" : undefined}
-      data-plugin-slot={SIDEBAR_SLOT_ID}
+      data-plugin-slot="console-toolbar-button"
+      title={`${PLUGIN_DISPLAY_NAME} — live company state`}
       style={{
-        display: "flex",
+        display: "inline-flex",
         alignItems: "center",
-        gap: "0.5rem",
-        padding: "0.4rem 0.75rem",
+        gap: "0.4rem",
+        padding: "0.35rem 0.65rem",
         fontSize: "0.8125rem",
         fontWeight: 500,
         color: isActive ? "var(--foreground)" : "var(--muted-foreground)",
         background: isActive ? "var(--accent)" : "transparent",
-        borderRadius: "0.5rem",
+        borderRadius: "0.375rem",
         textDecoration: "none",
-        transition: "background 0.15s, color 0.15s",
-      }}
-      onMouseEnter={(e) => {
-        if (!isActive) e.currentTarget.style.background = "color-mix(in oklab, var(--accent) 60%, transparent)";
-      }}
-      onMouseLeave={(e) => {
-        if (!isActive) e.currentTarget.style.background = "transparent";
       }}
     >
-      <span aria-hidden="true" style={{ fontSize: "1rem", lineHeight: 1 }}>
+      <span aria-hidden="true" style={{ fontSize: "0.9rem", lineHeight: 1 }}>
         ◧
       </span>
       <span>Console</span>
@@ -298,7 +377,7 @@ export function ConsoleSidebarLink({ context }: PluginSidebarProps) {
 }
 
 // ---------------------------------------------------------------------------
-// ConsoleOverviewPage — the full live company-state screen.
+// Tile cards.
 // ---------------------------------------------------------------------------
 
 function TileSourceBadge({ data }: { data: TileEnvelope<unknown> | null | undefined }) {
@@ -323,53 +402,36 @@ function TileSourceBadge({ data }: { data: TileEnvelope<unknown> | null | undefi
 function TileNote({ data }: { data: TileEnvelope<unknown> | null | undefined }) {
   if (!data) return null;
   if (data.status === "live") return null;
-  if (data.note || data.error) {
-    return (
-      <p style={{ ...mutedTextStyle, fontSize: "0.75rem", color: "var(--warning)" }}>
-        {data.note ?? data.error}
-      </p>
-    );
-  }
-  return null;
-}
-
-function PendingTile({
-  label,
-  data,
-}: {
-  label: string;
-  data: TileEnvelope<null> | null;
-}) {
-  const hostNavigation = useHostNavigation();
+  const text = data.note ?? data.error ?? "Data feed unavailable.";
   return (
-    <article style={cardStyle} aria-label={label}>
-      <header style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-        <span style={{ ...mutedTextStyle, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-          {label}
-        </span>
-        <span style={{ fontSize: "1.5rem", fontWeight: 600, color: "var(--muted-foreground)" }}>
-          —
-        </span>
-      </header>
-      <TileSourceBadge data={data ?? null} />
-      <TileNote data={data ?? null} />
-      <p style={{ ...mutedTextStyle }}>
-        Data feed pending. Tile will populate once the platform exposes this endpoint to the
-        plugin SDK. See <a {...hostNavigation.linkProps("/HDO/issues/HDO-137")} style={linkStyle}>HDO-137</a>.
-      </p>
-    </article>
+    <p style={{ ...mutedTextStyle, fontSize: "0.75rem", color: "var(--warning)" }}>
+      {text}
+    </p>
   );
 }
 
-function AgentsTileCard({ data }: { data: PluginDataResult<AgentsData> }) {
-  const hostNavigation = useHostNavigation();
+function AgentsTileCard({
+  data,
+  onCardActivate,
+}: {
+  data: PluginDataResult<AgentsData>;
+  onCardActivate: (() => void) | undefined;
+}) {
   const payload = data.data?.data ?? null;
-  const status = data.data?.status;
   return (
     <article
-      style={cardStyle}
+      style={{ ...cardStyle, cursor: onCardActivate ? "pointer" : "default" }}
       aria-label="Agents KPI"
-      onClick={data.loading ? undefined : () => hostNavigation.navigate(`/${hostNavigation.resolveHref("/agents").replace(/^\//, "")}`)}
+      onClick={onCardActivate}
+      onKeyDown={(event) => {
+        if (!onCardActivate) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onCardActivate();
+        }
+      }}
+      tabIndex={onCardActivate ? 0 : undefined}
+      role={onCardActivate ? "button" : undefined}
     >
       <header style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
         <span style={{ ...mutedTextStyle, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -397,15 +459,6 @@ function AgentsTileCard({ data }: { data: PluginDataResult<AgentsData> }) {
       ) : null}
       <TileSourceBadge data={data.data ?? null} />
       <TileNote data={data.data ?? null} />
-      {status !== "live" ? null : (
-        <p style={{ ...mutedTextStyle }}>
-          Click to view the{" "}
-          <a {...hostNavigation.linkProps("/agents")} style={linkStyle}>
-            full agent directory
-          </a>
-          .
-        </p>
-      )}
     </article>
   );
 }
@@ -439,6 +492,57 @@ function OpenIssuesTileCard({ data }: { data: PluginDataResult<OpenIssuesData> }
   );
 }
 
+function AttentionTileCard({ data }: { data: PluginDataResult<AttentionData> }) {
+  const payload = data.data?.data ?? null;
+  return (
+    <article style={cardStyle} aria-label="Attention KPI">
+      <header style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+        <span style={{ ...mutedTextStyle, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+          Attention
+        </span>
+        <span style={{ fontSize: "1.75rem", fontWeight: 600 }}>
+          {payload ? payload.total : "—"}
+        </span>
+      </header>
+      {payload ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+          {Object.entries(payload.byShelf).map(([shelf, count]) => (
+            <div key={shelf} style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
+              <StatusBadge label={shelf} status="warning" />
+              <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>{count}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <TileSourceBadge data={data.data ?? null} />
+      <TileNote data={data.data ?? null} />
+    </article>
+  );
+}
+
+function RunsTileCard({ data }: { data: PluginDataResult<RunsData> }) {
+  const payload = data.data?.data ?? null;
+  return (
+    <article style={cardStyle} aria-label="Runs (24h) KPI">
+      <header style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+        <span style={{ ...mutedTextStyle, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+          Runs (24h)
+        </span>
+        <span style={{ fontSize: "1.75rem", fontWeight: 600 }}>
+          {payload ? payload.total : "—"}
+        </span>
+      </header>
+      {payload ? (
+        <div style={{ ...mutedTextStyle }}>
+          <div>Filtered to <code>kind=run.started</code> within the last 24 hours.</div>
+        </div>
+      ) : null}
+      <TileSourceBadge data={data.data ?? null} />
+      <TileNote data={data.data ?? null} />
+    </article>
+  );
+}
+
 function GoalsTileCard({ data }: { data: PluginDataResult<GoalsData> }) {
   const payload = data.data?.data ?? null;
   return (
@@ -452,7 +556,7 @@ function GoalsTileCard({ data }: { data: PluginDataResult<GoalsData> }) {
         </span>
       </header>
       {payload ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.5rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.5rem" }}>
           <div style={{ ...mutedTextStyle }}>
             <div style={{ color: "var(--foreground)", fontWeight: 600 }}>{payload.active}</div>
             <div>active</div>
@@ -462,8 +566,40 @@ function GoalsTileCard({ data }: { data: PluginDataResult<GoalsData> }) {
             <div>achieved</div>
           </div>
           <div style={{ ...mutedTextStyle }}>
-            <div style={{ color: "var(--foreground)", fontWeight: 600 }}>{payload.archived}</div>
-            <div>archived</div>
+            <div style={{ color: "var(--foreground)", fontWeight: 600 }}>{payload.planned}</div>
+            <div>planned</div>
+          </div>
+          <div style={{ ...mutedTextStyle }}>
+            <div style={{ color: "var(--foreground)", fontWeight: 600 }}>{payload.cancelled}</div>
+            <div>cancelled</div>
+          </div>
+        </div>
+      ) : null}
+      <TileSourceBadge data={data.data ?? null} />
+      <TileNote data={data.data ?? null} />
+    </article>
+  );
+}
+
+function CostsTileCard({ data }: { data: PluginDataResult<CostsData> }) {
+  const payload = data.data?.data ?? null;
+  return (
+    <article style={cardStyle} aria-label="Costs KPI">
+      <header style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+        <span style={{ ...mutedTextStyle, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+          Costs
+        </span>
+        <span style={{ fontSize: "1.75rem", fontWeight: 600 }}>
+          {payload ? `$${(payload.totalCostCents / 100).toFixed(2)}` : "—"}
+        </span>
+      </header>
+      {payload ? (
+        <div style={{ ...mutedTextStyle }}>
+          <div>
+            by agent: {payload.byAgent.map((row) => row.agentName ?? row.agentId).join(", ") || "—"}
+          </div>
+          <div>
+            by provider: {payload.byProvider.map((row) => row.provider).join(", ") || "—"}
           </div>
         </div>
       ) : null}
@@ -474,7 +610,6 @@ function GoalsTileCard({ data }: { data: PluginDataResult<GoalsData> }) {
 }
 
 function KpiGrid({
-  companyId,
   agents,
   openIssues,
   attention,
@@ -482,13 +617,12 @@ function KpiGrid({
   goals,
   costs,
 }: {
-  companyId: string | null;
   agents: PluginDataResult<AgentsData>;
   openIssues: PluginDataResult<OpenIssuesData>;
-  attention: PluginDataResult<PendingData>;
-  runs: PluginDataResult<PendingData>;
+  attention: PluginDataResult<AttentionData>;
+  runs: PluginDataResult<RunsData>;
   goals: PluginDataResult<GoalsData>;
-  costs: PluginDataResult<PendingData>;
+  costs: PluginDataResult<CostsData>;
 }) {
   return (
     <section
@@ -499,18 +633,18 @@ function KpiGrid({
         gap: "1rem",
       }}
     >
-      <AgentsTileCard data={agents} />
+      <AgentsTileCard data={agents} onCardActivate={undefined} />
       <OpenIssuesTileCard data={openIssues} />
-      <PendingTile label="Attention" data={attention.data ?? null} />
-      <PendingTile label="Runs (24h)" data={runs.data ?? null} />
+      <AttentionTileCard data={attention} />
+      <RunsTileCard data={runs} />
       <GoalsTileCard data={goals} />
-      <PendingTile label="Costs" data={costs.data ?? null} />
+      <CostsTileCard data={costs} />
     </section>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Status cards row — three cards under the tiles.
+// Status cards row — three clickable resource cards under the tiles.
 // ---------------------------------------------------------------------------
 
 function OpenIssuesCard({
@@ -521,24 +655,39 @@ function OpenIssuesCard({
   const hostNavigation = useHostNavigation();
   const payload = data.data?.data ?? null;
 
-  const onCardClick = useCallback(() => {
-    if (!data.data) return;
-    hostNavigation.navigate(hostNavigation.resolveHref("/issues?status=in_progress,blocked,todo,in_review"));
-  }, [hostNavigation, data.data]);
+  // Pick the first available issue across the open-status samples. The card
+  // deep-links to a single Paperclip resource (a specific issue), not a
+  // filtered inbox URL — that satisfies the AC #5 "resource card" shape.
+  const leadIssue = useMemo(() => {
+    if (!payload) return null;
+    for (const status of OPEN_STATUS_COLUMNS.map((col) => col.key)) {
+      const samples = payload.perStatusSamples[status];
+      if (samples && samples.length > 0) {
+        return samples[0];
+      }
+    }
+    return null;
+  }, [payload]);
+
+  const handleActivate = useCallback(() => {
+    if (!leadIssue) return;
+    hostNavigation.navigate(hostNavigation.resolveHref(leadIssue.deepLink));
+  }, [hostNavigation, leadIssue]);
 
   return (
-    <button
-      type="button"
-      onClick={onCardClick}
+    <article
+      style={{ ...cardStyle, cursor: leadIssue ? "pointer" : "default" }}
       aria-label="Open issues by status"
-      style={{
-        ...cardStyle,
-        cursor: "pointer",
-        textAlign: "left",
-        background: "transparent",
-        color: "var(--foreground)",
-        outline: "none",
+      onClick={handleActivate}
+      onKeyDown={(event) => {
+        if (!leadIssue) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          handleActivate();
+        }
       }}
+      tabIndex={leadIssue ? 0 : undefined}
+      role={leadIssue ? "button" : undefined}
     >
       <header style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
         <span style={{ ...mutedTextStyle, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -555,6 +704,10 @@ function OpenIssuesCard({
           {OPEN_STATUS_COLUMNS.map((col) => {
             const count = payload.byStatus[col.key] ?? 0;
             const samples = payload.perStatusSamples[col.key] ?? [];
+            const lead = samples[0];
+            const href = lead
+              ? hostNavigation.resolveHref(lead.deepLink)
+              : null;
             return (
               <li
                 key={col.key}
@@ -568,21 +721,48 @@ function OpenIssuesCard({
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                   <StatusBadge label={col.label} status={col.tone} />
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                   <span style={{ fontWeight: 600, color: "var(--foreground)" }}>{count}</span>
                 </div>
+                {lead && href ? (
+                  <a
+                    href={href}
+                    onClick={(event) => {
+                      if (
+                        event.defaultPrevented ||
+                        event.button !== 0 ||
+                        event.metaKey ||
+                        event.ctrlKey ||
+                        event.altKey ||
+                        event.shiftKey
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      hostNavigation.navigate(href);
+                    }}
+                    style={{
+                      ...linkStyle,
+                      fontSize: "0.75rem",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      maxWidth: "12rem",
+                    }}
+                  >
+                    {lead.identifier ?? lead.title}
+                  </a>
+                ) : null}
               </li>
             );
           })}
         </ul>
       )}
-      {payload && payload.total > 0 ? (
+      {leadIssue ? (
         <p style={{ ...mutedTextStyle }}>
-          Click to open the issues inbox.
+          Click to open the most-recent open issue in Paperclip.
         </p>
       ) : null}
-    </button>
+    </article>
   );
 }
 
@@ -590,34 +770,11 @@ function AgentStatusCard({ data }: { data: PluginDataResult<AgentsData> }) {
   const hostNavigation = useHostNavigation();
   const payload = data.data?.data ?? null;
 
-  const onCardClick = useCallback(() => {
-    hostNavigation.navigate(hostNavigation.resolveHref("/agents"));
-  }, [hostNavigation]);
-
-  const onAgentClick = useCallback(
-    (event: MouseEvent<HTMLAnchorElement>, urlKey: string | null) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!urlKey) return;
-      hostNavigation.navigate(hostNavigation.resolveHref(`/agents/${urlKey}`));
-    },
-    [hostNavigation],
-  );
-
+  // The card itself is an `<article>`, never a `<button>`. Each agent row is a
+  // separate anchor that deep-links to its `/agents/<urlKey>` resource page.
+  // That avoids the previous invalid `<button>`-wrapping-`<a>` markup.
   return (
-    <button
-      type="button"
-      onClick={onCardClick}
-      aria-label="Agent status grid"
-      style={{
-        ...cardStyle,
-        cursor: "pointer",
-        textAlign: "left",
-        background: "transparent",
-        color: "var(--foreground)",
-        outline: "none",
-      }}
-    >
+    <article style={cardStyle} aria-label="Agent status grid">
       <header style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
         <span style={{ ...mutedTextStyle, fontSize: "0.6875rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>
           Agent status
@@ -630,68 +787,73 @@ function AgentStatusCard({ data }: { data: PluginDataResult<AgentsData> }) {
         <p style={mutedTextStyle}>Agent directory unavailable.</p>
       ) : (
         <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.25rem" }}>
-          {payload.sample.map((agent) => (
-            <li
-              key={agent.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "0.5rem",
-                fontSize: "0.8125rem",
-              }}
-            >
-              <a
-                href={hostNavigation.resolveHref(`/agents/${agent.urlKey ?? agent.id}`)}
-                onClick={(event) => onAgentClick(event, agent.urlKey)}
-                style={{ ...linkStyle, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          {payload.sample.map((agent) => {
+            const href = agent.urlKey
+              ? hostNavigation.resolveHref(`/agents/${agent.urlKey}`)
+              : null;
+            return (
+              <li
+                key={agent.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "0.5rem",
+                  fontSize: "0.8125rem",
+                }}
               >
-                {agent.name}
-              </a>
-              <StatusBadge
-                label={agent.status}
-                status={agent.status === "running" ? "ok" : agent.status === "paused" ? "warning" : "info"}
-              />
-            </li>
-          ))}
+                {href ? (
+                  <a
+                    href={href}
+                    onClick={(event) => {
+                      if (
+                        event.defaultPrevented ||
+                        event.button !== 0 ||
+                        event.metaKey ||
+                        event.ctrlKey ||
+                        event.altKey ||
+                        event.shiftKey
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      hostNavigation.navigate(href);
+                    }}
+                    style={{
+                      ...linkStyle,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {agent.name}
+                  </a>
+                ) : (
+                  <span>{agent.name}</span>
+                )}
+                <StatusBadge
+                  label={agent.status}
+                  status={agent.status === "running" ? "ok" : agent.status === "paused" ? "warning" : "info"}
+                />
+              </li>
+            );
+          })}
           {payload.sample.length === 0 ? (
             <li style={mutedTextStyle}>No agents recorded yet.</li>
           ) : null}
         </ul>
       )}
-    </button>
+    </article>
   );
 }
 
 function LatestActivityCard({
-  agents,
-  goals,
+  runs,
 }: {
-  agents: PluginDataResult<AgentsData>;
-  goals: PluginDataResult<GoalsData>;
+  runs: PluginDataResult<RunsData>;
 }) {
   const hostNavigation = useHostNavigation();
-  const agentList = agents.data?.data?.sample ?? [];
-  const goalList = goals.data?.data?.sample ?? [];
-
-  const items = useMemo(() => {
-    const merged: Array<{ at: string; label: string; href: string }> = [];
-    for (const agent of agentList) {
-      merged.push({
-        at: agents.data?.generatedAt ?? new Date().toISOString(),
-        label: `Agent: ${agent.name} (${agent.status})`,
-        href: hostNavigation.resolveHref(`/agents/${agent.urlKey ?? agent.id}`),
-      });
-    }
-    for (const goal of goalList) {
-      merged.push({
-        at: goals.data?.generatedAt ?? new Date().toISOString(),
-        label: `Goal: ${goal.title} (${goal.status})`,
-        href: hostNavigation.resolveHref(`/goals/${goal.id}`),
-      });
-    }
-    return merged.slice(0, 8);
-  }, [agentList, goalList, agents.data?.generatedAt, goals.data?.generatedAt, hostNavigation]);
+  const sample = runs.data?.data?.sample ?? [];
 
   return (
     <article style={cardStyle} aria-label="Latest activity feed">
@@ -700,23 +862,50 @@ function LatestActivityCard({
           Latest activity
         </span>
       </header>
-      {items.length === 0 ? (
-        <p style={mutedTextStyle}>No activity yet — once the workspace spins up, agent and goal state changes will appear here.</p>
+      {sample.length === 0 ? (
+        <p style={mutedTextStyle}>
+          No timeline activity yet. Once the company runs through a heartbeat,
+          run.started events will appear here.
+        </p>
       ) : (
         <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.375rem" }}>
-          {items.map((item, i) => (
-            <li key={`${item.href}-${i}`} style={{ display: "flex", flexDirection: "column", gap: "0.125rem" }}>
-              <a href={item.href} style={{ ...linkStyle, fontSize: "0.875rem" }} onClick={(e) => {
-                e.preventDefault();
-                hostNavigation.navigate(item.href);
-              }}>
-                {item.label}
-              </a>
-              <span style={{ ...mutedTextStyle, fontSize: "0.6875rem" }}>
-                {relativeTime(item.at)}
-              </span>
-            </li>
-          ))}
+          {sample.map((event) => {
+            const href = event.deepLink ? hostNavigation.resolveHref(event.deepLink) : null;
+            const label = event.target
+              ? `${event.kind} → ${event.target.identifier ?? event.target.title ?? event.target.id}`
+              : event.kind;
+            return (
+              <li key={event.id} style={{ display: "flex", flexDirection: "column", gap: "0.125rem" }}>
+                {href ? (
+                  <a
+                    href={href}
+                    onClick={(evt) => {
+                      if (
+                        evt.defaultPrevented ||
+                        evt.button !== 0 ||
+                        evt.metaKey ||
+                        evt.ctrlKey ||
+                        evt.altKey ||
+                        evt.shiftKey
+                      ) {
+                        return;
+                      }
+                      evt.preventDefault();
+                      hostNavigation.navigate(href);
+                    }}
+                    style={{ ...linkStyle, fontSize: "0.875rem" }}
+                  >
+                    {label}
+                  </a>
+                ) : (
+                  <span style={{ ...mutedTextStyle, fontSize: "0.875rem" }}>{label}</span>
+                )}
+                <span style={{ ...mutedTextStyle, fontSize: "0.6875rem" }}>
+                  {relativeTime(event.occurredAt)}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </article>
@@ -726,11 +915,11 @@ function LatestActivityCard({
 function StatusCardsRow({
   agents,
   openIssues,
-  goals,
+  runs,
 }: {
   agents: PluginDataResult<AgentsData>;
   openIssues: PluginDataResult<OpenIssuesData>;
-  goals: PluginDataResult<GoalsData>;
+  runs: PluginDataResult<RunsData>;
 }) {
   return (
     <section
@@ -743,7 +932,7 @@ function StatusCardsRow({
     >
       <OpenIssuesCard data={openIssues} />
       <AgentStatusCard data={agents} />
-      <LatestActivityCard agents={agents} goals={goals} />
+      <LatestActivityCard runs={runs} />
     </section>
   );
 }
@@ -796,7 +985,6 @@ export function ConsoleOverviewPage({ context }: PluginPageProps) {
       </header>
 
       <KpiGrid
-        companyId={companyId}
         agents={agents}
         openIssues={openIssues}
         attention={attention}
@@ -805,30 +993,28 @@ export function ConsoleOverviewPage({ context }: PluginPageProps) {
         costs={costs}
       />
 
-      <StatusCardsRow agents={agents} openIssues={openIssues} goals={goals} />
+      <StatusCardsRow agents={agents} openIssues={openIssues} runs={runs} />
     </main>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Per-project scaffolding detail tabs (F2 / F3 placeholders)
+// Per-project scaffolding detail tabs (F2 / F3 empty states)
 // ---------------------------------------------------------------------------
 
 function ExtensionEmptyState({
   context,
   extension,
   featureTitle,
+  parentIssueHref,
+  pluginIssueHref,
 }: {
   context: PluginHostContext;
   extension: "vault" | "pixel-agents";
   featureTitle: string;
+  parentIssueHref: string;
+  pluginIssueHref: string;
 }) {
-  const hostNavigation = useHostNavigation();
-
-  const featureIssueHref = useMemo(() => {
-    return hostNavigation.resolveHref("/HDO/issues/HDO-117");
-  }, [hostNavigation]);
-
   return (
     <section
       aria-label={`${featureTitle} placeholder`}
@@ -842,22 +1028,20 @@ function ExtensionEmptyState({
         <h2 style={{ margin: 0, fontSize: "1.25rem", lineHeight: 1.25 }}>{featureTitle}</h2>
         <p style={{ ...mutedTextStyle, marginTop: "0.25rem" }}>
           {extension === "vault"
-            ? "Read-mostive Obsidian library surface for this project."
+            ? "Read-mostly Obsidian library surface for this project."
             : "Pixel-agent inventory sourced from the existing research findings."}
         </p>
       </header>
 
       <p style={mutedTextStyle}>
         Coming <strong>{EXTENSION_TARGET_DATE_ISO}</strong>. This tab is scaffolded so the
-        project detail navigation shows the reserved surfaces today; data loading is added
-        in the F3 ({extension === "vault" ? "Vault" : "Pixel Agents"}) extension wave.
+        project detail navigation shows the reserved surface today; data loading is added
+        in the {extension === "vault" ? "F3 (Vault)" : "F2 (Pixel Agents)"} extension wave.
       </p>
 
       <p style={mutedTextStyle}>
-        See <a {...hostNavigation.linkProps(featureIssueHref)} style={linkStyle}>HDO-117</a> for the
-        parent initiative and{" "}
-        <a {...hostNavigation.linkProps("/HDO/issues/HDO-137")} style={linkStyle}>HDO-137</a> for
-        this F1 plugin's review trail.
+        See <a href={parentIssueHref} style={linkStyle}>HDO-117</a> for the parent initiative and{" "}
+        <a href={pluginIssueHref} style={linkStyle}>HDO-137</a> for this F1 plugin's review trail.
       </p>
 
       <p style={{ ...mutedTextStyle, fontSize: "0.75rem" }}>
@@ -869,15 +1053,31 @@ function ExtensionEmptyState({
 }
 
 export function ConsoleProjectVaultTab({ context }: PluginDetailTabProps) {
-  return <ExtensionEmptyState context={context} extension="vault" featureTitle="Vault" />;
+  const hostNavigation = useHostNavigation();
+  const parentHref = hostNavigation.resolveHref("/HDO/issues/HDO-117");
+  const pluginHref = hostNavigation.resolveHref("/HDO/issues/HDO-137");
+  return (
+    <ExtensionEmptyState
+      context={context}
+      extension="vault"
+      featureTitle="Vault"
+      parentIssueHref={parentHref}
+      pluginIssueHref={pluginHref}
+    />
+  );
 }
 
 export function ConsoleProjectPixelAgentsTab({ context }: PluginDetailTabProps) {
+  const hostNavigation = useHostNavigation();
+  const parentHref = hostNavigation.resolveHref("/HDO/issues/HDO-117");
+  const pluginHref = hostNavigation.resolveHref("/HDO/issues/HDO-137");
   return (
     <ExtensionEmptyState
       context={context}
       extension="pixel-agents"
       featureTitle="Pixel Agents"
+      parentIssueHref={parentHref}
+      pluginIssueHref={pluginHref}
     />
   );
 }

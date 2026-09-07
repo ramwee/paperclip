@@ -1772,6 +1772,98 @@ export interface WorkerToHostMethods {
     result: Goal,
   ];
 
+  // Companies (read-only endpoints exposed via the host bridge). Each method
+  // is capability-gated; declaring the matching capability in the manifest is
+  // required.
+  "companies.attention.list": [
+    params: {
+      companyId: string;
+      includeDismissed?: boolean;
+      archived?: boolean;
+      all?: boolean;
+      activitySince?: string;
+      activityUntil?: string;
+      queue?: string;
+      cursor?: string;
+      sort?: "activity" | "decide";
+      limit?: number;
+    },
+    result: {
+      items: Array<{
+        id: string;
+        sourceKind: string;
+        sourceId: string;
+        subject: {
+          kind: string;
+          id: string;
+          title?: string | null;
+          identifier?: string | null;
+          status?: string | null;
+        };
+        shelf: string;
+        state: string;
+        activityAt: string;
+        retentionVersion: number;
+        archivedAt: string | null;
+      }>;
+      nextCursor: string | null;
+      generatedAt: string;
+    },
+  ];
+  "companies.timeline.list": [
+    params: {
+      companyId: string;
+      from?: string;
+      to?: string;
+      userId?: string;
+      goalId?: string;
+      projectId?: string;
+      issueId?: string;
+      limit?: number;
+      offset?: number;
+    },
+    result: {
+      events: Array<{
+        id: string;
+        kind: string;
+        occurredAt: string;
+        companyId: string;
+        actor: {
+          type: "user" | "agent" | "system";
+          id: string | null;
+          name: string | null;
+        } | null;
+        target: {
+          type: string;
+          id: string;
+          identifier?: string | null;
+          title?: string | null;
+        } | null;
+        payload: Record<string, unknown>;
+      }>;
+      nextOffset: number | null;
+      generatedAt: string;
+    },
+  ];
+  "companies.costs.summary": [
+    params: {
+      companyId: string;
+      from?: string;
+      to?: string;
+    },
+    result: {
+      companyId: string;
+      range: {
+        from: string | null;
+        to: string | null;
+      };
+      totalCostCents: number;
+      byAgent: Array<{ agentId: string; agentName: string | null; costCents: number }>;
+      byProvider: Array<{ provider: string; costCents: number }>;
+      generatedAt: string;
+    },
+  ];
+
   // Access
   "access.members.list": [
     params: { companyId: string; includeArchived?: boolean },

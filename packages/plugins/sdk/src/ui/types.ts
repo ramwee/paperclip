@@ -271,6 +271,17 @@ export interface PluginDetailTabProps {
 }
 
 /**
+ * Props passed to a plugin `globalToolbarButton` component.
+ *
+ * A global toolbar button is rendered in the host's top bar (breadcrumb bar)
+ * on every page and receives the active company context (no entity scope).
+ */
+export interface PluginGlobalToolbarButtonProps {
+  /** The current host context. Always includes `companyId` when mounted. */
+  context: PluginHostContext;
+}
+
+/**
  * Props passed to a plugin sidebar component.
  *
  * A sidebar entry adds a link or section to the application sidebar.

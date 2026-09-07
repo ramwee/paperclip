@@ -1,7 +1,16 @@
 /**
- * Package entrypoint. The `paperclipPlugin` field in `package.json` resolves
- * `manifest`, `worker`, and `ui` relative to this file, so re-exporting the
- * manifest here keeps a single source of truth.
+ * F1 huidots-console-overview — public entrypoint.
+ *
+ * Re-exports the worker default export and the four UI components. The
+ * Paperclip manifest (`./manifest.ts`) and the SDK build pipeline consume
+ * these named exports.
  */
+
 export { default as manifest } from "./manifest.js";
-export { default } from "./worker.js";
+export { default as worker } from "./worker.js";
+export {
+  ConsoleToolbarButton,
+  ConsoleOverviewPage,
+  ConsoleProjectVaultTab,
+  ConsoleProjectPixelAgentsTab,
+} from "./ui/index.js";

@@ -1268,6 +1268,8 @@ export const PLUGIN_CAPABILITIES = [
   "goals.create",
   "goals.update",
   "activity.read",
+  "attention.read",
+  "timeline.read",
   "costs.read",
   "issues.orchestration.read",
   "access.members.read",

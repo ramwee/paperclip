@@ -1118,9 +1118,17 @@ export interface PluginTelemetryClient {
 }
 
 /**
- * `ctx.companies` — read company metadata.
+ * `ctx.companies` — read company metadata and company-scoped read endpoints.
  *
- * Requires `companies.read` capability.
+ * Capabilities:
+ * - `companies.read` for `list` and `get`
+ * - `attention.read` for `attention.list`
+ * - `activity.read` for `timeline.list`
+ * - `costs.read` for `costs.summary`
+ *
+ * The `attention`, `timeline`, and `costs` methods round-trip the host's HTTP
+ * routes (`/api/companies/:companyId/{attention,timeline,costs/summary}`) so
+ * plugin UI can deep-link straight to the matching host page.
  */
 export interface PluginCompaniesClient {
   /**
@@ -1132,6 +1140,55 @@ export interface PluginCompaniesClient {
    * Get one company by ID.
    */
   get(companyId: string): Promise<Company | null>;
+
+  /**
+   * Read the company attention feed (host route `/companies/:companyId/attention`).
+   * Requires `attention.read`.
+   */
+  attention: {
+    list(input: {
+      companyId: string;
+      includeDismissed?: boolean;
+      archived?: boolean;
+      all?: boolean;
+      activitySince?: string;
+      activityUntil?: string;
+      queue?: string;
+      cursor?: string;
+      sort?: "activity" | "decide";
+      limit?: number;
+    }): Promise<PluginAttentionFeed>;
+  };
+
+  /**
+   * Read the company timeline (host route `/companies/:companyId/timeline`).
+   * Requires `activity.read`.
+   */
+  timeline: {
+    list(input: {
+      companyId: string;
+      from?: string;
+      to?: string;
+      userId?: string;
+      goalId?: string;
+      projectId?: string;
+      issueId?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<PluginTimelineFeed>;
+  };
+
+  /**
+   * Read the company cost summary (host route `/companies/:companyId/costs/summary`).
+   * Requires `costs.read`.
+   */
+  costs: {
+    summary(input: {
+      companyId: string;
+      from?: string;
+      to?: string;
+    }): Promise<PluginCostsSummary>;
+  };
 }
 
 /**
@@ -1326,6 +1383,84 @@ export interface PluginIssueOrchestrationSummary {
   costs: PluginIssueCostSummary;
   openBudgetIncidents: PluginBudgetIncidentSummary[];
   invocationBlocks: PluginIssueInvocationBlockSummary[];
+}
+
+// ---------------------------------------------------------------------------
+// Companies (read-only) — company attention, timeline, and costs endpoints.
+// ---------------------------------------------------------------------------
+
+/**
+ * One attention item surfaced by `GET /api/companies/:companyId/attention`.
+ *
+ * Mirrors the host route payload; the plugin SDK does not collapse or re-shape
+ * the fields so a dashboard can pass the host URL path verbatim in deep-links.
+ */
+export interface PluginAttentionItem {
+  id: string;
+  sourceKind: string;
+  sourceId: string;
+  subject: {
+    kind: string;
+    id: string;
+    title?: string | null;
+    identifier?: string | null;
+    status?: string | null;
+  };
+  shelf: string;
+  state: string;
+  activityAt: string;
+  retentionVersion: number;
+  archivedAt: string | null;
+}
+
+export interface PluginAttentionFeed {
+  items: PluginAttentionItem[];
+  nextCursor: string | null;
+  generatedAt: string;
+}
+
+/**
+ * One timeline event surfaced by `GET /api/companies/:companyId/timeline`.
+ *
+ * Plugin consumers should treat `kind` and the per-kind fields as opaque and
+ * use the host `kind` vocabulary verbatim. `target` and `actor` are best-effort
+ * typed projections the host has already normalised.
+ */
+export interface PluginTimelineEvent {
+  id: string;
+  kind: string;
+  occurredAt: string;
+  companyId: string;
+  actor: {
+    type: "user" | "agent" | "system";
+    id: string | null;
+    name: string | null;
+  } | null;
+  target: {
+    type: string;
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+  } | null;
+  payload: Record<string, unknown>;
+}
+
+export interface PluginTimelineFeed {
+  events: PluginTimelineEvent[];
+  nextOffset: number | null;
+  generatedAt: string;
+}
+
+export interface PluginCostsSummary {
+  companyId: string;
+  range: {
+    from: string | null;
+    to: string | null;
+  };
+  totalCostCents: number;
+  byAgent: Array<{ agentId: string; agentName: string | null; costCents: number }>;
+  byProvider: Array<{ provider: string; costCents: number }>;
+  generatedAt: string;
 }
 
 export interface PluginIssueSubtreeOptions {

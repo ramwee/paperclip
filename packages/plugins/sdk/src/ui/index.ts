@@ -151,6 +151,7 @@ export type {
   PluginCompanySettingsPageProps,
   PluginWidgetProps,
   PluginDetailTabProps,
+  PluginGlobalToolbarButtonProps,
   PluginSidebarProps,
   PluginRouteSidebarProps,
   PluginProjectSidebarItemProps,

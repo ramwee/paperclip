@@ -194,6 +194,15 @@ export interface HostServices {
   companies: {
     list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
+    attention: {
+      list(params: WorkerToHostMethods["companies.attention.list"][0]): Promise<WorkerToHostMethods["companies.attention.list"][1]>;
+    };
+    timeline: {
+      list(params: WorkerToHostMethods["companies.timeline.list"][0]): Promise<WorkerToHostMethods["companies.timeline.list"][1]>;
+    };
+    costs: {
+      summary(params: WorkerToHostMethods["companies.costs.summary"][0]): Promise<WorkerToHostMethods["companies.costs.summary"][1]>;
+    };
   };
 
   /** Provides `projects.list`, `projects.get`, `projects.listWorkspaces`, `projects.getPrimaryWorkspace`, `projects.getWorkspaceForIssue`. */
@@ -431,6 +440,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Companies
   "companies.list": "companies.read",
   "companies.get": "companies.read",
+  "companies.attention.list": "attention.read",
+  "companies.timeline.list": "activity.read",
+  "companies.costs.summary": "costs.read",
 
   // Projects
   "projects.list": "projects.read",
@@ -816,6 +828,15 @@ export function createHostClientHandlers(
     }),
     "companies.get": gated("companies.get", async (params) => {
       return services.companies.get(params);
+    }),
+    "companies.attention.list": gated("companies.attention.list", async (params) => {
+      return services.companies.attention.list(params);
+    }),
+    "companies.timeline.list": gated("companies.timeline.list", async (params) => {
+      return services.companies.timeline.list(params);
+    }),
+    "companies.costs.summary": gated("companies.costs.summary", async (params) => {
+      return services.companies.costs.summary(params);
     }),
 
     // Projects

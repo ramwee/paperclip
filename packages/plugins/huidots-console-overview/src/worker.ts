@@ -1,44 +1,43 @@
 /**
  * huidots-console-overview worker.
  *
- * Registers the six `getData` handlers that back the F1 KPI tiles. Each
- * handler exposes exactly one host data source through the canonical
- * Paperclip client (`ctx.*`):
+ * Registers the six `getData` handlers that back the F1 KPI tiles. Every tile
+ * hits exactly one Paperclip endpoint via the host's capability-gated bridge:
  *
- *   agents             → `ctx.agents.list({ companyId })`
- *                        (host: GET /api/companies/{id}/agents)
+ *   agents             → GET /api/companies/{id}/agents
+ *   openIssuesByStatus → GET /api/companies/{id}/issues?status=in_progress,blocked,todo,in_review&limit=200
+ *   attention          → GET /api/companies/{id}/attention
+ *   runs               → derived from GET /api/companies/{id}/timeline?limit=20
+ *                        (filter kind=run.started, last 24h)
+ *   goals              → GET /api/companies/{id}/goals
+ *   costs              → GET /api/companies/{id}/costs/summary
  *
- *   openIssuesByStatus → `ctx.issues.list({ companyId, status })` per
- *                        OPEN_ISSUE_STATUSES, joined into a single
- *                        status-bucketed payload
- *                        (host: GET /api/companies/{id}/issues)
+ * Emits a `plugin.<id>.tick` event on a 30-second interval so the UI can
+ * refresh without holding its own timer. The interval is cleared on shutdown.
  *
- *   attention          → graceful "data feed pending" payload (the
- *                        /companies/{id}/attention endpoint exists on
- *                        the host but is not yet wired into the SDK;
- *                        see HDO-137 / completion comment).
- *
- *   runs               → graceful "data feed pending" payload (the
- *                        /companies/{id}/timeline endpoint exists but
- *                        has no SDK client yet).
- *
- *   goals              → `ctx.goals.list({ companyId })`
- *                        (host: GET /api/companies/{id}/goals)
- *
- *   costs              → graceful "data feed pending" payload (the
- *                        /companies/{id}/costs/summary endpoint exists
- *                        but has no SDK client yet).
- *
- * The worker also emits a `plugin.<id>.tick` event on a 30s interval
- * (matching the spec's tick refresh requirement) so the UI can react
- * without holding its own timer.
+ * No outbound HTTP, no Paperclip writes, no local-folder declarations —
+ * F1 is a pure read surface over the existing authenticated host client.
  */
 
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { KPI_KEYS, OPEN_ISSUE_STATUSES, PLUGIN_ID } from "./constants.js";
+import {
+  KPI_KEYS,
+  OPEN_ISSUE_STATUSES,
+  PLUGIN_ID,
+  REFRESH_INTERVAL_MS,
+  TICK_EVENT,
+} from "./constants.js";
 
 const PLUGIN_NAME = "huidots-console-overview";
-const TICK_INTERVAL_MS = 30_000;
+const RUN_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const RUN_KIND = "run.started";
+
+/**
+ * Module-scope handle for the 30s tick interval. Hoisted out of `setup` so
+ * `onShutdown` can clear it without leaking. `setup` is the only place that
+ * creates the timer; `onShutdown` is the only place that clears it.
+ */
+let tickHandle: ReturnType<typeof setInterval> | null = null;
 
 type TileStatus = "live" | "pending" | "error";
 
@@ -72,8 +71,8 @@ function envelope<T>(
   };
 }
 
-function pendingTile(source: string, note: string): TileEnvelope<null> {
-  return envelope<null>(null, "pending", source, note);
+function pendingTile<T>(source: string, note: string): TileEnvelope<T> {
+  return envelope<T>(null, "pending", source, note);
 }
 
 function summariseError(err: unknown): string {
@@ -86,32 +85,35 @@ const plugin = definePlugin({
     ctx.logger.info(`${PLUGIN_NAME} plugin setup`);
 
     // -------------------------------------------------------------------
-    // 30-second server-side tick. The issue spec uses this name verbatim.
+    // 30-second server-side tick. The SDK auto-namespaces plugin events to
+    // `plugin.<pluginId>.<name>`, so we emit the bare name `tick`.
+    //
+    // The interval is captured in `tickHandle` so onShutdown() can clear it.
     // -------------------------------------------------------------------
-    let stopped = false;
-    const tickHandle = setInterval(() => {
-      if (stopped) return;
+    tickHandle = setInterval(() => {
       void ctx.events
-        .emit(`${PLUGIN_ID}.tick`, "", {
+        .emit(TICK_EVENT, "", {
           at: new Date().toISOString(),
-          intervalMs: TICK_INTERVAL_MS,
+          intervalMs: REFRESH_INTERVAL_MS,
         })
         .catch((err: unknown) => {
           ctx.logger.warn(`tick emit failed: ${summariseError(err)}`);
         });
-    }, TICK_INTERVAL_MS);
-    // keep the handle reachable for graceful shutdown hooks below
-    void tickHandle;
+    }, REFRESH_INTERVAL_MS);
+    // Make the timer unref'd so it never blocks worker shutdown even if
+    // onShutdown somehow fails to clear it.
+    if (typeof (tickHandle as { unref?: () => void }).unref === "function") {
+      (tickHandle as { unref: () => void }).unref();
+    }
 
     // -------------------------------------------------------------------
     // KPI tile: agents
-    // Host endpoint: GET /api/companies/{id}/agents
     // -------------------------------------------------------------------
     ctx.data.register(KPI_KEYS.agents, async (params: Record<string, unknown>) => {
       const companyId = asCompanyId(params.companyId);
       if (!companyId) {
         return pendingTile(
-          `/api/companies/:companyId/agents`,
+          "/api/companies/:companyId/agents",
           "companyId missing from request; cannot fetch agents",
         );
       }
@@ -153,8 +155,6 @@ const plugin = definePlugin({
 
     // -------------------------------------------------------------------
     // KPI tile: openIssuesByStatus
-    // Host endpoint: GET /api/companies/{id}/issues?status=in_progress,
-    // blocked,todo,in_review&limit=200
     // -------------------------------------------------------------------
     ctx.data.register(KPI_KEYS.openIssuesByStatus, async (params: Record<string, unknown>) => {
       const companyId = asCompanyId(params.companyId);
@@ -164,35 +164,32 @@ const plugin = definePlugin({
           "companyId missing from request; cannot fetch issues",
         );
       }
-      const byStatus: Record<string, number> = {};
-      let total = 0;
-      const perStatusSamples: Record<string, unknown[]> = {};
-      const errors: string[] = [];
       try {
+        const byStatus: Record<string, number> = {};
+        let total = 0;
+        const perStatusSamples: Record<string, unknown[]> = {};
         for (const status of OPEN_ISSUE_STATUSES) {
-          try {
-            const issues = await ctx.issues.list({
-              companyId,
-              status: status as Parameters<typeof ctx.issues.list>[0]["status"],
-              limit: 200,
-              offset: 0,
-            });
-            byStatus[status] = issues.length;
-            total += issues.length;
-            perStatusSamples[status] = issues.slice(0, 3).map((issue) => ({
-              id: issue.id,
-              identifier: issue.identifier,
-              title: issue.title,
-              status: issue.status,
-              priority: issue.priority,
-              assigneeAgentId: issue.assigneeAgentId,
-              updatedAt: issue.updatedAt,
-            }));
-          } catch (err) {
-            errors.push(`${status}: ${summariseError(err)}`);
-          }
+          const rows = await ctx.issues.list({
+            companyId,
+            status: status as Parameters<typeof ctx.issues.list>[0]["status"],
+            limit: 200,
+            offset: 0,
+          });
+          byStatus[status] = rows.length;
+          total += rows.length;
+          perStatusSamples[status] = rows.slice(0, 3).map((issue) => ({
+            id: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            status: issue.status,
+            priority: issue.priority,
+            assigneeAgentId: issue.assigneeAgentId,
+            updatedAt: issue.updatedAt,
+            deepLink: issue.identifier
+              ? `/issues/${issue.identifier}`
+              : `/issues/${issue.id}`,
+          }));
         }
-        const status: TileStatus = errors.length === 0 ? "live" : "error";
         return envelope(
           {
             total,
@@ -200,12 +197,8 @@ const plugin = definePlugin({
             perStatusSamples,
             statuses: [...OPEN_ISSUE_STATUSES],
           },
-          status,
+          "live",
           `/api/companies/:companyId/issues?status=${OPEN_ISSUE_STATUSES.join(",")}&limit=200`,
-          status === "live"
-            ? undefined
-            : `partial result; ${errors.length} status bucket(s) errored`,
-          errors.length > 0 ? errors.join("; ") : undefined,
         );
       } catch (err) {
         return envelope(
@@ -219,45 +212,131 @@ const plugin = definePlugin({
     });
 
     // -------------------------------------------------------------------
-    // KPI tile: attention — graceful empty until SDK exposes /attention.
+    // KPI tile: attention
     // -------------------------------------------------------------------
     ctx.data.register(KPI_KEYS.attention, async (params: Record<string, unknown>) => {
       const companyId = asCompanyId(params.companyId);
-      return pendingTile(
-        "/api/companies/:companyId/attention",
-        companyId
-          ? "Plugin SDK does not yet expose the /attention endpoint; awaiting capability-gated company-state read method (HDO-137 platform gap)."
-          : "companyId missing from request",
-      );
+      if (!companyId) {
+        return pendingTile(
+          "/api/companies/:companyId/attention",
+          "companyId missing from request",
+        );
+      }
+      try {
+        const feed = await ctx.companies.attention.list({
+          companyId,
+          archived: false,
+          includeDismissed: false,
+          sort: "activity",
+          limit: 50,
+        });
+        const items = feed.items ?? [];
+        return envelope(
+          {
+            total: items.length,
+            byShelf: items.reduce<Record<string, number>>((acc, item) => {
+              const key = String(item.shelf);
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            }, {}),
+            byState: items.reduce<Record<string, number>>((acc, item) => {
+              const key = String(item.state);
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            }, {}),
+            sample: items.slice(0, 5).map((item) => ({
+              id: item.id,
+              sourceKind: item.sourceKind,
+              sourceId: item.sourceId,
+              subject: item.subject,
+              shelf: item.shelf,
+              state: item.state,
+              activityAt: item.activityAt,
+            })),
+            generatedAt: feed.generatedAt,
+          },
+          "live",
+          "/api/companies/:companyId/attention",
+        );
+      } catch (err) {
+        return envelope(
+          null,
+          "error",
+          "/api/companies/:companyId/attention",
+          undefined,
+          summariseError(err),
+        );
+      }
     });
 
     // -------------------------------------------------------------------
-    // KPI tile: runs — graceful empty until SDK exposes /timeline.
+    // KPI tile: runs — derived from /timeline?limit=20, kind=run.started, 24h.
     // -------------------------------------------------------------------
     ctx.data.register(KPI_KEYS.runs, async (params: Record<string, unknown>) => {
       const companyId = asCompanyId(params.companyId);
-      return pendingTile(
-        "/api/companies/:companyId/timeline?limit=20",
-        companyId
-          ? "Plugin SDK does not yet expose the /timeline endpoint; awaiting capability-gated company-state read method (HDO-137 platform gap)."
-          : "companyId missing from request",
-      );
+      if (!companyId) {
+        return pendingTile(
+          "/api/companies/:companyId/timeline?limit=20",
+          "companyId missing from request",
+        );
+      }
+      try {
+        const since = new Date(Date.now() - RUN_LOOKBACK_MS).toISOString();
+        const feed = await ctx.companies.timeline.list({
+          companyId,
+          from: since,
+          limit: 20,
+          offset: 0,
+        });
+        const events = feed.events ?? [];
+        const runStarted = events.filter((event) => event.kind === RUN_KIND);
+        return envelope(
+          {
+            total: runStarted.length,
+            windowMs: RUN_LOOKBACK_MS,
+            sample: runStarted.slice(0, 5).map((event) => ({
+              id: event.id,
+              kind: event.kind,
+              occurredAt: event.occurredAt,
+              actor: event.actor,
+              target: event.target,
+              deepLink: event.target
+                ? event.target.type === "issue" && event.target.identifier
+                  ? `/issues/${event.target.identifier}`
+                  : event.target.type === "agent"
+                    ? `/agents/${event.target.id}`
+                    : null
+                : null,
+            })),
+            generatedAt: feed.generatedAt,
+          },
+          "live",
+          "/api/companies/:companyId/timeline?limit=20",
+        );
+      } catch (err) {
+        return envelope(
+          null,
+          "error",
+          "/api/companies/:companyId/timeline?limit=20",
+          undefined,
+          summariseError(err),
+        );
+      }
     });
 
     // -------------------------------------------------------------------
     // KPI tile: goals
-    // Host endpoint: GET /api/companies/{id}/goals
     // -------------------------------------------------------------------
     ctx.data.register(KPI_KEYS.goals, async (params: Record<string, unknown>) => {
       const companyId = asCompanyId(params.companyId);
       if (!companyId) {
         return pendingTile(
           "/api/companies/:companyId/goals",
-          "companyId missing from request; cannot fetch goals",
+          "companyId missing from request",
         );
       }
       try {
-        const goals = await ctx.goals.list({ companyId });
+        const goals = await ctx.goals.list({ companyId, limit: 200 });
         const byLevel = goals.reduce<Record<string, number>>((acc, g) => {
           const key = String(g.level ?? "unknown");
           acc[key] = (acc[key] ?? 0) + 1;
@@ -294,17 +373,46 @@ const plugin = definePlugin({
     });
 
     // -------------------------------------------------------------------
-    // KPI tile: costs — graceful empty until SDK exposes /costs/summary.
+    // KPI tile: costs
     // -------------------------------------------------------------------
     ctx.data.register(KPI_KEYS.costs, async (params: Record<string, unknown>) => {
       const companyId = asCompanyId(params.companyId);
-      return pendingTile(
-        "/api/companies/:companyId/costs/summary",
-        companyId
-          ? "Plugin SDK does not yet expose the /costs/summary endpoint; awaiting capability-gated company-state read method (HDO-137 platform gap)."
-          : "companyId missing from request",
-      );
+      if (!companyId) {
+        return pendingTile(
+          "/api/companies/:companyId/costs/summary",
+          "companyId missing from request",
+        );
+      }
+      try {
+        const summary = await ctx.companies.costs.summary({ companyId });
+        return envelope(
+          {
+            totalCostCents: summary.totalCostCents,
+            range: summary.range,
+            byAgent: summary.byAgent.slice(0, 5),
+            byProvider: summary.byProvider.slice(0, 5),
+            generatedAt: summary.generatedAt,
+          },
+          "live",
+          "/api/companies/:companyId/costs/summary",
+        );
+      } catch (err) {
+        return envelope(
+          null,
+          "error",
+          "/api/companies/:companyId/costs/summary",
+          undefined,
+          summariseError(err),
+        );
+      }
     });
+  },
+
+  async onShutdown() {
+    if (tickHandle !== null) {
+      clearInterval(tickHandle);
+      tickHandle = null;
+    }
   },
 
   async onHealth() {

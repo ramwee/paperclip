@@ -782,6 +782,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async get(companyId: string) {
           return callHost("companies.get", { companyId });
         },
+
+        attention: {
+          async list(input) {
+            return callHost("companies.attention.list", input);
+          },
+        },
+
+        timeline: {
+          async list(input) {
+            return callHost("companies.timeline.list", input);
+          },
+        },
+
+        costs: {
+          async summary(input) {
+            return callHost("companies.costs.summary", input);
+          },
+        },
       },
 
       issues: {
