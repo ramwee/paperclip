@@ -55,6 +55,9 @@ import type {
   PrincipalPermissionGrant,
   PrincipalType,
   EnvSecretRefBinding,
+  PluginAttentionFeed,
+  PluginTimelineFeed,
+  PluginCostsSummary,
 } from "@paperclipai/shared";
 import type { PluginPerformActionContext } from "./protocol.js";
 
@@ -1144,6 +1147,61 @@ export interface PluginCompaniesClient {
    * Get one company by ID.
    */
   get(companyId: string): Promise<Company | null>;
+
+  /**
+   * Read the company attention feed surfaced by
+   * `GET /api/companies/:companyId/attention`.
+   *
+   * Requires `attention.read`.
+   */
+  attention: {
+    list(input: {
+      companyId: string;
+      includeDismissed?: boolean;
+      archived?: boolean;
+      all?: boolean;
+      activitySince?: string;
+      activityUntil?: string;
+      queue?: string;
+      cursor?: string;
+      sort?: "activity" | "decide";
+      limit?: number;
+    }): Promise<PluginAttentionFeed>;
+  };
+
+  /**
+   * Read the company work timeline surfaced by
+   * `GET /api/companies/:companyId/timeline`.
+   *
+   * Requires `activity.read`.
+   */
+  timeline: {
+    list(input: {
+      companyId: string;
+      from?: string;
+      to?: string;
+      userId?: string;
+      goalId?: string;
+      projectId?: string;
+      issueId?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<PluginTimelineFeed>;
+  };
+
+  /**
+   * Read the company cost summary surfaced by
+   * `GET /api/companies/:companyId/costs/summary`.
+   *
+   * Requires `costs.read`.
+   */
+  costs: {
+    summary(input: {
+      companyId: string;
+      from?: string;
+      to?: string;
+    }): Promise<PluginCostsSummary>;
+  };
 }
 
 /**

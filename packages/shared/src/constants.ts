@@ -1340,6 +1340,12 @@ export const PLUGIN_CAPABILITIES = [
   "goals.create",
   "goals.update",
   "activity.read",
+  // Read the company attention feed surfaced by
+  // `GET /api/companies/:companyId/attention`. Required by
+  // `companies.attention.list`; paired with the activity/costs/companies
+  // read entries so a console-overview style dashboard can pull every
+  // summary tile from one plugin install.
+  "attention.read",
   "costs.read",
   "issues.orchestration.read",
   "access.members.read",

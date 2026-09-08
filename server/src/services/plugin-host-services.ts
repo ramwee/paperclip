@@ -27,7 +27,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType, PluginAttentionFeed, PluginAttentionItem, PluginTimelineFeed, PluginTimelineEvent, PluginCostsSummary } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -35,6 +35,9 @@ import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { attentionService } from "./attention.js";
+import { workTimelineService } from "./work-timeline.js";
+import { costService } from "./costs.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -1711,6 +1714,168 @@ export function buildHostServices(
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
         return (await companies.getById(params.companyId)) as Company;
+      },
+      // Read-only summary bridges exposed via the plugin SDK. The host
+      // routes already have full board-only access checks; these wrappers
+      // narrow that to the plugin's declared capabilities (attention.read,
+      // activity.read, costs.read) at the JSON-RPC handler boundary.
+      attention: {
+        async list(params): Promise<PluginAttentionFeed> {
+          await ensurePluginAvailableForCompany(params.companyId);
+          const includeDismissed = params.includeDismissed === true;
+          const archived = params.archived === true;
+          const all = params.all === true;
+          // The web route runs in a board session and scopes dismissals to
+          // the requesting user. The plugin worker has no board user, so we
+          // pass `userId: null` and let the service return the unscoped feed
+          // (every row, no per-user dismissal filtering). Callers can opt
+          // into includeDismissed themselves.
+          const feed = await attentionService(db).list(params.companyId, {
+            includeDismissed,
+            archived,
+            all,
+            allowUnscopedAll: all,
+            activitySince: params.activitySince,
+            activityUntil: params.activityUntil,
+            queue: params.queue,
+            cursor: params.cursor,
+            sort: params.sort,
+            limit: params.limit,
+            userId: null,
+          });
+          const items: PluginAttentionItem[] = feed.items.map((item) => ({
+            id: item.id,
+            sourceKind: item.sourceKind,
+            sourceId: item.subject.id,
+            subject: {
+              kind: item.subject.kind,
+              id: item.subject.id,
+              title: item.subject.title ?? null,
+              identifier: item.subject.identifier ?? null,
+              status: item.subject.status ?? null,
+            },
+            shelf: String(item.shelf),
+            // The host `AttentionItem.state` is only populated for a subset
+            // of source kinds (e.g. reviews, blockers). For the rest, fall
+            // back to the subject status so the plugin tile can render
+            // something coherent instead of an empty string.
+            state: (item as { state?: string }).state ?? item.subject.status ?? "",
+            activityAt: item.activityAt,
+            retentionVersion: item.retentionVersion,
+            archivedAt: item.archivedAt,
+          }));
+          return {
+            items,
+            nextCursor: feed.nextCursor,
+            generatedAt: feed.generatedAt,
+          };
+        },
+      },
+      timeline: {
+        async list(params): Promise<PluginTimelineFeed> {
+          await ensurePluginAvailableForCompany(params.companyId);
+          const from = params.from ? new Date(params.from) : undefined;
+          const to = params.to ? new Date(params.to) : undefined;
+          const result = await workTimelineService(db).getTimeline({
+            companyId: params.companyId,
+            from,
+            to,
+            userId: params.userId,
+            goalId: params.goalId,
+            projectId: params.projectId,
+            issueId: params.issueId,
+            limit: params.limit,
+            offset: params.offset,
+          });
+          const actorById = new Map(result.actors.map((actor) => [actor.id, actor]));
+          const events: PluginTimelineEvent[] = result.events.map((event, index) => {
+            const actor = actorById.get(event.actorId);
+            // The host `WorkTimelineActor.type` is broader than the plugin
+            // TimelineEvent.actor union (`agent`/`user`/`system`/`plugin`).
+            // Collapse `plugin` rows into `system` so the dashboard does not
+            // have to teach a new actor type.
+            const actorType = actor?.type === "agent" || actor?.type === "user"
+              ? actor.type
+              : "system";
+            return {
+              id: `${event.issueId}:${event.kind}:${index}`,
+              kind: event.kind,
+              occurredAt: event.at,
+              companyId: params.companyId,
+              actor: actor
+                ? {
+                    type: actorType,
+                    id: actor.id.includes(":") ? actor.id.split(":", 2)[1] ?? null : actor.id,
+                    name: actor.name ?? null,
+                  }
+                : null,
+              target: {
+                type: "issue",
+                id: event.issueId,
+                identifier: null,
+                title: null,
+              },
+              payload: {},
+            };
+          });
+          const nextOffset = result.pagination.hasMore
+            ? result.pagination.offset + result.pagination.limit
+            : null;
+          return {
+            events,
+            nextOffset,
+            generatedAt: result.window.to,
+          };
+        },
+      },
+      costs: {
+        async summary(params): Promise<PluginCostsSummary> {
+          await ensurePluginAvailableForCompany(params.companyId);
+          const from = params.from ? new Date(params.from) : undefined;
+          const to = params.to ? new Date(params.to) : undefined;
+          const range = (from || to) ? { from, to } : undefined;
+          // The plugin bridge only reads summary/byAgent/byProvider; none of
+          // those paths trigger budget evaluation, so an empty hooks object
+          // is enough. The web route uses `costService(db, budgetHooks)`
+          // because it can record createEvents that may need to push
+          // budget incidents.
+          const svc = costService(db, {});
+          const [baseSummary, agentRows, providerRows] = await Promise.all([
+            svc.summary(params.companyId, range),
+            svc.byAgent(params.companyId, range),
+            svc.byProvider(params.companyId, range),
+          ]);
+          // Re-derive totalCostCents from byAgent so the field is internally
+          // consistent with the breakdown even when a different
+          // billingType filter changes the summary number on the dedicated
+          // /costs/summary route (the plugin tile should not disagree with
+          // the per-agent/per-provider breakdown it ships alongside).
+          const totalCostCents = agentRows.reduce((sum, row) => sum + Number(row.costCents ?? 0), 0)
+            || baseSummary.spendCents;
+          const providerMap = new Map<string, number>();
+          for (const row of providerRows) {
+            const key = row.provider ?? "unknown";
+            providerMap.set(key, (providerMap.get(key) ?? 0) + Number(row.costCents ?? 0));
+          }
+          return {
+            companyId: params.companyId,
+            range: {
+              from: from ? from.toISOString() : null,
+              to: to ? to.toISOString() : null,
+            },
+            totalCostCents,
+            byAgent: agentRows.map((row) => ({
+              agentId: row.agentId,
+              agentName: row.agentName ?? null,
+              costCents: Number(row.costCents ?? 0),
+            })),
+            byProvider: [...providerMap.entries()].map(([provider, costCents]) => ({
+              provider,
+              costCents,
+            })),
+            generatedAt: new Date().toISOString(),
+          };
+        },
       },
     },
 

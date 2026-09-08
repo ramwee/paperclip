@@ -48,6 +48,9 @@ import type {
   ExternalObjectMentionConfidence,
   ExternalObjectMentionSourceKind,
   EnvSecretRefBinding,
+  PluginAttentionFeed,
+  PluginTimelineFeed,
+  PluginCostsSummary,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
@@ -1720,6 +1723,49 @@ export interface WorkerToHostMethods {
   "companies.get": [
     params: { companyId: string },
     result: Company | null,
+  ];
+
+  // Companies (read-only summary endpoints exposed via the host bridge). Each
+  // method is capability-gated; declaring the matching capability in the
+  // manifest is required. The result shapes mirror the host `/attention`,
+  // `/timeline`, and `/costs/summary` route payloads so a console-style
+  // dashboard can deep-link with the URL path verbatim.
+  "companies.attention.list": [
+    params: {
+      companyId: string;
+      includeDismissed?: boolean;
+      archived?: boolean;
+      all?: boolean;
+      activitySince?: string;
+      activityUntil?: string;
+      queue?: string;
+      cursor?: string;
+      sort?: "activity" | "decide";
+      limit?: number;
+    },
+    result: PluginAttentionFeed,
+  ];
+  "companies.timeline.list": [
+    params: {
+      companyId: string;
+      from?: string;
+      to?: string;
+      userId?: string;
+      goalId?: string;
+      projectId?: string;
+      issueId?: string;
+      limit?: number;
+      offset?: number;
+    },
+    result: PluginTimelineFeed,
+  ];
+  "companies.costs.summary": [
+    params: {
+      companyId: string;
+      from?: string;
+      to?: string;
+    },
+    result: PluginCostsSummary,
   ];
 
   // Projects (read)

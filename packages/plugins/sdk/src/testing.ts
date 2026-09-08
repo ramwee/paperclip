@@ -22,6 +22,9 @@ import type {
   Agent,
   Goal,
   Approval,
+  PluginAttentionFeed,
+  PluginTimelineFeed,
+  PluginCostsSummary,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -120,6 +123,9 @@ export interface TestHarness {
     executionWorkspaces?: PluginExecutionWorkspaceMetadata[];
     accessMembers?: PluginAccessMember[];
     principalGrants?: PrincipalPermissionGrant[];
+    attentionFeeds?: Array<{ companyId: string; feed: PluginAttentionFeed }>;
+    timelineFeeds?: Array<{ companyId: string; feed: PluginTimelineFeed }>;
+    costsSummaries?: Array<{ companyId: string; summary: PluginCostsSummary }>;
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
@@ -506,6 +512,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const goals = new Map<string, Goal>();
   const accessMembers = new Map<string, PluginAccessMember>();
   const principalGrants = new Map<string, PrincipalPermissionGrant[]>();
+  // Per-company seeded responses for the company attention/timeline/cost
+  // summary bridges. The host has a rich query surface (dismissals, queue,
+  // sort, pagination, range filters), so the harness returns the seeded
+  // payload verbatim when the worker queries the matching company. This keeps
+  // a unit test deterministic without re-implementing the full query
+  // semantics.
+  const attentionFeeds = new Map<string, PluginAttentionFeed>();
+  const timelineFeeds = new Map<string, PluginTimelineFeed>();
+  const costsSummaries = new Map<string, PluginCostsSummary>();
 
   function principalGrantsKey(companyId: string, principalType: PrincipalType, principalId: string) {
     return `${companyId}:${principalType}:${principalId}`;
@@ -1553,6 +1568,35 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "companies.read");
         return companies.get(companyId) ?? null;
       },
+      attention: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "attention.read");
+          const seeded = attentionFeeds.get(input.companyId);
+          return seeded ?? { items: [], nextCursor: null, generatedAt: new Date().toISOString() };
+        },
+      },
+      timeline: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "activity.read");
+          const seeded = timelineFeeds.get(input.companyId);
+          return seeded ?? { events: [], nextOffset: null, generatedAt: new Date().toISOString() };
+        },
+      },
+      costs: {
+        async summary(input) {
+          requireCapability(manifest, capabilitySet, "costs.read");
+          const seeded = costsSummaries.get(input.companyId);
+          if (seeded) return seeded;
+          return {
+            companyId: input.companyId,
+            range: { from: input.from ?? null, to: input.to ?? null },
+            totalCostCents: 0,
+            byAgent: [],
+            byProvider: [],
+            generatedAt: new Date().toISOString(),
+          };
+        },
+      },
     },
     issues: {
       async list(input) {
@@ -2572,6 +2616,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         list.push(row);
         principalGrants.set(principalGrantsKey(row.companyId, row.principalType, row.principalId), list);
       }
+      for (const row of input.attentionFeeds ?? []) attentionFeeds.set(row.companyId, row.feed);
+      for (const row of input.timelineFeeds ?? []) timelineFeeds.set(row.companyId, row.feed);
+      for (const row of input.costsSummaries ?? []) costsSummaries.set(row.companyId, row.summary);
     },
     setConfig(config) {
       currentConfig = { ...config };

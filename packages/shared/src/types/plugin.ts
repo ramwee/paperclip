@@ -789,6 +789,80 @@ export interface PluginMigrationRecord {
 // ---------------------------------------------------------------------------
 
 /**
+ * One attention item surfaced by `GET /api/companies/:companyId/attention`.
+ *
+ * Mirrors the host route payload; the plugin SDK does not collapse or re-shape
+ * the fields so a dashboard can pass the host URL path verbatim in deep-links.
+ */
+export interface PluginAttentionItem {
+  id: string;
+  sourceKind: string;
+  sourceId: string;
+  subject: {
+    kind: string;
+    id: string;
+    title?: string | null;
+    identifier?: string | null;
+    status?: string | null;
+  };
+  shelf: string;
+  state: string;
+  activityAt: string;
+  retentionVersion: number;
+  archivedAt: string | null;
+}
+
+export interface PluginAttentionFeed {
+  items: PluginAttentionItem[];
+  nextCursor: string | null;
+  generatedAt: string;
+}
+
+/**
+ * One timeline event surfaced by `GET /api/companies/:companyId/timeline`.
+ *
+ * Plugin consumers should treat `kind` and the per-kind fields as opaque and
+ * use the host `kind` vocabulary verbatim. `target` and `actor` are best-effort
+ * typed projections the host has already normalised.
+ */
+export interface PluginTimelineEvent {
+  id: string;
+  kind: string;
+  occurredAt: string;
+  companyId: string;
+  actor: {
+    type: "user" | "agent" | "system";
+    id: string | null;
+    name: string | null;
+  } | null;
+  target: {
+    type: string;
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+  } | null;
+  payload: Record<string, unknown>;
+}
+
+export interface PluginTimelineFeed {
+  events: PluginTimelineEvent[];
+  nextOffset: number | null;
+  generatedAt: string;
+}
+
+export interface PluginCostsSummary {
+  companyId: string;
+  range: {
+    from: string | null;
+    to: string | null;
+  };
+  totalCostCents: number;
+  byAgent: Array<{ agentId: string; agentName: string | null; costCents: number }>;
+  byProvider: Array<{ provider: string; costCents: number }>;
+  generatedAt: string;
+}
+
+/**
  * Domain type for a single scoped key-value entry in the `plugin_state` table.
  * Plugins read and write these entries through `ctx.state` in the SDK.
  *
