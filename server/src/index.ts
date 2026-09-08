@@ -36,6 +36,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
+import { serverVersion } from "./version.js";
 import {
   StartupRefusalError,
   migrationRefusalError,
@@ -850,6 +851,7 @@ export async function startServer(): Promise<StartedServer> {
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
     bindHost: config.host,
+    hostVersion: serverVersion,
     authPublicBaseUrl: config.authPublicBaseUrl,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
