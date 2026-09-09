@@ -37,6 +37,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import { serverVersion } from "./version.js";
+import { waitForEmbeddedPostgresAdoption } from "./embedded-postgres-adoption.js";
 import {
   StartupRefusalError,
   migrationRefusalError,
@@ -473,24 +474,33 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
-      try {
-        const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
-        if (
-          typeof actualDataDir !== "string" ||
-          resolve(actualDataDir) !== resolve(dataDir)
-        ) {
-          throw new Error("reachable postgres does not use the expected embedded data directory");
+      const detectedPort = await detectPort(configuredPort);
+      if (detectedPort !== configuredPort) {
+        try {
+          await waitForEmbeddedPostgresAdoption({
+            expectedDataDir: dataDir,
+            probeDataDir: () => getPostgresDataDirectory(configuredAdminConnectionString),
+            onRetry: (attempt) => {
+              if (attempt === 1 || attempt % 20 === 0) {
+                logger.info(
+                  `Waiting for embedded PostgreSQL crash recovery on configured port ${configuredPort} (attempt=${attempt})`,
+                );
+              }
+            },
+          });
+        } catch (err) {
+          logger.error(
+            { err, configuredPort, dataDir },
+            "Embedded PostgreSQL adoption failed; refusing duplicate startup against the same data directory",
+          );
+          throw err;
         }
         await ensurePostgresDatabase(configuredAdminConnectionString, "paperclip");
         logger.warn(
           `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
         );
-      } catch {
-        const detectedPort = await detectPort(configuredPort);
-        if (detectedPort !== configuredPort) {
-          logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
-        }
-        port = detectedPort;
+      } else {
+        port = configuredPort;
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         const createEmbeddedPostgres = () => new EmbeddedPostgres({
           databaseDir: dataDir,

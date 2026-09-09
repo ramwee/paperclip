@@ -551,6 +551,7 @@ export async function terminateLocalService(
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number; verifyAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
+  const targetProcessTree = process.platform === "win32";
   const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
 
   const targetIsGone = async () => {
@@ -575,7 +576,9 @@ export async function terminateLocalService(
   };
 
   try {
-    if (targetProcessGroup) {
+    if (targetProcessTree) {
+      await execFileAsync("taskkill", ["/PID", String(record.pid), "/T"]);
+    } else if (targetProcessGroup) {
       process.kill(-record.processGroupId!, signal);
     } else {
       process.kill(record.pid, signal);
@@ -586,7 +589,9 @@ export async function terminateLocalService(
 
   if (await waitUntilGone(opts?.forceAfterMs ?? 2_000)) return;
   try {
-    if (targetProcessGroup) {
+    if (targetProcessTree) {
+      await execFileAsync("taskkill", ["/PID", String(record.pid), "/T", "/F"]);
+    } else if (targetProcessGroup) {
       process.kill(-record.processGroupId!, "SIGKILL");
     } else {
       process.kill(record.pid, "SIGKILL");
@@ -597,7 +602,9 @@ export async function terminateLocalService(
 
   if (await waitUntilGone(opts?.verifyAfterMs ?? 2_000)) return;
 
-  const target = targetProcessGroup
+  const target = targetProcessTree
+    ? `process tree rooted at ${record.pid}`
+    : targetProcessGroup
     ? `process group ${record.processGroupId}`
     : `process ${record.pid}`;
   const listener = record.port ? ` and listener on port ${record.port}` : "";

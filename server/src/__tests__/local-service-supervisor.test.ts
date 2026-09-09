@@ -98,6 +98,36 @@ describe("local service supervision", () => {
     }
   }, 15_000);
 
+  it("terminates the complete registered process tree on Windows", async () => {
+    if (process.platform !== "win32") return;
+    const reservation = net.createServer();
+    await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+    const address = reservation.address();
+    const port = typeof address === "object" && address ? address.port : null;
+    if (!port) throw new Error("Failed to allocate descendant listener port");
+    await new Promise<void>((resolve, reject) => reservation.close((error) => error ? reject(error) : resolve()));
+
+    const descendantScript = `require('node:http').createServer((_req,res)=>res.end('ok')).listen(${port},'127.0.0.1');setInterval(()=>{},1000)`;
+    const parentScript = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendantScript)}],{stdio:'ignore'});setInterval(()=>{},1000)`;
+    const parent = spawn(process.execPath, ["-e", parentScript], { stdio: "ignore" });
+    if (!parent.pid) throw new Error("Failed to start Windows process-tree fixture");
+
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!(await readLocalServicePortOwner(port)) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(await readLocalServicePortOwner(port)).toBeTypeOf("number");
+
+      await terminateLocalService({ pid: parent.pid, processGroupId: null, port });
+      expect(await readLocalServicePortOwner(port)).toBeNull();
+    } finally {
+      if (parent.pid) {
+        spawn("taskkill", ["/PID", String(parent.pid), "/T", "/F"], { stdio: "ignore" });
+      }
+    }
+  }, 15_000);
+
   it("does not wait for an unrelated process that takes over the service port", async () => {
     if (process.platform === "win32") return;
     const unrelatedListener = net.createServer();
